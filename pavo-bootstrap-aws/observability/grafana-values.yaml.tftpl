@@ -1,0 +1,93 @@
+# grafana/grafana values — in-VPC Grafana. Templated by observability.tf with
+# ${grafana_host} (the cell's external hostname).
+#
+# Invariants: telemetry OFF (no phone-home); Postgres metadata backend;
+# dashboards as-code via the sidecar; single in-VPC Prometheus datasource —
+# no AWS API dependencies.
+
+fullnameOverride: pavo-observability-grafana
+
+admin:
+  existingSecret: pavo-grafana-admin
+  userKey: admin-user
+  passwordKey: admin-password
+
+adminUser: ""
+adminPassword: ""
+
+grafana.ini:
+  server:
+    domain: "${grafana_host}"
+    root_url: "https://grafana.%(domain)s"
+  analytics:
+    reporting_enabled: false
+    check_for_updates: false
+    check_for_plugin_updates: false
+  auth.anonymous:
+    enabled: false
+  plugins:
+    plugin_admin_enabled: false
+  database:
+    type: postgres
+    host: pavo-observability-postgres:5432
+    name: grafana
+    user: grafana
+
+env:
+  GF_ANALYTICS_REPORTING_ENABLED: "false"
+  GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+  GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+  GF_PLUGINS_PLUGIN_ADMIN_ENABLED: "false"
+envValueFrom:
+  GF_DATABASE_PASSWORD:
+    secretKeyRef:
+      name: pavo-grafana-postgres
+      key: password
+
+# Namespaced RBAC: the sidecar only watches pavo-observability, so a Role is
+# sufficient — no cluster-scoped ClusterRole (least privilege for BYOC).
+rbac:
+  namespaced: true
+
+sidecar:
+  dashboards:
+    enabled: true
+    label: grafana_dashboard
+    searchNamespace: pavo-observability
+
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        uid: prometheus
+        access: proxy
+        isDefault: true
+        url: http://pavo-observability-prometheus-server.pavo-observability.svc
+
+ingress:
+  enabled: true
+  ingressClassName: pavo-nginx
+  # Real cert from cert-manager (same issuer the frontend uses) — without this the
+  # pavo-nginx controller serves its default self-signed cert, and the frontend's
+  # HSTS (includeSubDomains on *.pavoai.dev) makes browsers hard-block it.
+  annotations:
+    cert-manager.io/cluster-issuer: pavo-letsencrypt-prod
+  hosts:
+    - "grafana.${grafana_host}"
+  tls:
+    - hosts:
+        - "grafana.${grafana_host}"
+      secretName: pavo-observability-grafana-tls
+
+persistence:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi

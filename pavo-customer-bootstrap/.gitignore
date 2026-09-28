@@ -1,0 +1,13 @@
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+*.tfvars.json
+
+# NOTE: backend.tf IS committed for this root module. customer-bootstrap is
+# Pavo-applied (not customer-applied), and Pavo always uses GCS — the partial
+# `backend "gcs" {}` declaration in backend.tf is correct everywhere; only the
+# per-customer `prefix` is supplied at `terraform init` via `-backend-config=`.
+#
+# .terraform.lock.hcl IS committed for reproducibility (same rationale as
+# pavo-bootstrap-aws — pinning provider versions across applies).

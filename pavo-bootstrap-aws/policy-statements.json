@@ -1,0 +1,477 @@
+[
+  {
+    "sid": "ReadOnlyDescribeList",
+    "effect": "Allow",
+    "actions": [
+      "rds:Describe*",
+      "rds:List*",
+      "elasticache:Describe*",
+      "elasticache:List*",
+      "elasticfilesystem:Describe*",
+      "elasticfilesystem:List*",
+      "eks:ListClusters",
+      "secretsmanager:ListSecrets",
+      "ec2:DescribeVpcs",
+      "ec2:DescribeVpcAttribute",
+      "ec2:DescribeSubnets",
+      "ec2:DescribeSecurityGroups",
+      "ec2:DescribeAvailabilityZones",
+      "ec2:DescribeVpcEndpoints",
+      "ec2:DescribeVpcEndpointServices",
+      "ec2:DescribeRouteTables",
+      "ec2:DescribeNetworkInterfaces",
+      "ec2:DescribePrefixLists"
+    ],
+    "resources": ["*"]
+  },
+  {
+    "sid": "RDSMutatingPavoResources",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": ["rds:*"],
+    "resources": [
+      "arn:aws:rds:*:*:db:pavo-*",
+      "arn:aws:rds:*:*:subgrp:pavo-*",
+      "arn:aws:rds:*:*:snapshot:pavo-*"
+    ]
+  },
+  {
+    "sid": "ElastiCacheMutatingPavoResources",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": ["elasticache:*"],
+    "resources": [
+      "arn:aws:elasticache:*:*:replicationgroup:pavo-*",
+      "arn:aws:elasticache:*:*:subnetgroup:pavo-*",
+      "arn:aws:elasticache:*:*:parametergroup:default.redis7"
+    ]
+  },
+  {
+    "sid": "S3",
+    "effect": "Allow",
+    "actions": ["s3:*"],
+    "resources": [
+      "arn:aws:s3:::pavo-*",
+      "arn:aws:s3:::pavo-*/*"
+    ]
+  },
+  {
+    "sid": "SNS",
+    "effect": "Allow",
+    "actions": ["sns:*"],
+    "resources": ["arn:aws:sns:*:*:pavo-*"]
+  },
+  {
+    "sid": "SQS",
+    "effect": "Allow",
+    "actions": ["sqs:*"],
+    "resources": ["arn:aws:sqs:*:*:pavo-*"]
+  },
+  {
+    "sid": "SESCreateIdentityWithRequestTag",
+    "effect": "Allow",
+    "actions": ["ses:CreateEmailIdentity"],
+    "resources": ["arn:aws:ses:*:*:identity/*"],
+    "conditions": {
+      "StringEquals": { "aws:RequestTag/managed_by": "pavo" }
+    }
+  },
+  {
+    "sid": "SESMutatingTaggedPavoIdentities",
+    "effect": "Allow",
+    "actions": [
+      "ses:SendEmail",
+      "ses:DeleteEmailIdentity",
+      "ses:GetEmailIdentity",
+      "ses:ListTagsForResource",
+      "ses:PutEmailIdentityDkimSigningAttributes"
+    ],
+    "resources": ["arn:aws:ses:*:*:identity/*"],
+    "conditions": {
+      "StringEquals": { "aws:ResourceTag/managed_by": "pavo" }
+    }
+  },
+  {
+    "sid": "SESTagWithoutRewritingOwnership",
+    "effect": "Allow",
+    "actions": ["ses:TagResource"],
+    "resources": ["arn:aws:ses:*:*:identity/*"],
+    "conditions": {
+      "StringEquals": { "aws:ResourceTag/managed_by": "pavo" },
+      "StringEqualsIfExists": { "aws:RequestTag/managed_by": "pavo" }
+    }
+  },
+  {
+    "sid": "SESUntagExceptOwnership",
+    "effect": "Allow",
+    "actions": ["ses:UntagResource"],
+    "resources": ["arn:aws:ses:*:*:identity/*"],
+    "conditions": {
+      "StringEquals": { "aws:ResourceTag/managed_by": "pavo" },
+      "ForAllValues:StringNotEquals": { "aws:TagKeys": ["managed_by"] }
+    }
+  },
+  {
+    "sid": "EFSCreateFileSystemWithRequestTag",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": ["elasticfilesystem:CreateFileSystem"],
+    "resources": ["*"],
+    "conditions": {
+      "StringEquals": {
+        "aws:RequestTag/managed_by": "pavo"
+      }
+    }
+  },
+  {
+    "sid": "EFSMutatingTaggedPavoResources",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": ["elasticfilesystem:*"],
+    "resources": ["*"],
+    "conditions": {
+      "StringEquals": {
+        "aws:ResourceTag/managed_by": "pavo"
+      }
+    }
+  },
+  {
+    "sid": "EKSAccessAndDescribe",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": [
+      "eks:DescribeCluster",
+      "eks:CreateAccessEntry",
+      "eks:DescribeAccessEntry",
+      "eks:ListAccessEntries",
+      "eks:AssociateAccessPolicy",
+      "eks:DisassociateAccessPolicy",
+      "eks:ListAssociatedAccessPolicies",
+      "eks:AccessKubernetesApi"
+    ],
+    "resources": [
+      "arn:aws:eks:*:*:cluster/*",
+      "arn:aws:eks:*:*:access-entry/*"
+    ]
+  },
+  {
+    "sid": "BedrockInvokeScopedToModels",
+    "scope": "boundary",
+    "effect": "Allow",
+    "actions": [
+      "bedrock:InvokeModel",
+      "bedrock:InvokeModelWithResponseStream"
+    ],
+    "resources": [
+      "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6",
+      "arn:aws:bedrock:*:*:inference-profile/us.anthropic.claude-sonnet-4-6",
+      "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-4-6-v1",
+      "arn:aws:bedrock:*:*:inference-profile/us.anthropic.claude-opus-4-6-v1",
+      "arn:aws:bedrock:*::foundation-model/amazon.titan-embed-text-v2:0"
+    ]
+  },
+  {
+    "sid": "LambdaMicrovmsLifecycle",
+    "scope": "boundary",
+    "effect": "Allow",
+    "actions": [
+      "lambda:RunMicrovm",
+      "lambda:GetMicrovm",
+      "lambda:ListMicrovms",
+      "lambda:SuspendMicrovm",
+      "lambda:ResumeMicrovm",
+      "lambda:TerminateMicrovm",
+      "lambda:CreateMicrovmAuthToken",
+      "lambda:GetMicrovmImage",
+      "lambda:ListMicrovmImages",
+      "lambda:ListMicrovmImageVersions"
+    ],
+    "resources": [
+      "arn:aws:lambda:*:*:microvm*",
+      "arn:aws:lambda:*:*:microvm-image*"
+    ]
+  },
+  {
+    "sid": "LambdaMicrovmsPassConnector",
+    "comment": "Resource MUST be '*': RunMicrovm implicitly attaches the INTERNET_EGRESS network connector and the authorizer checks lambda:PassNetworkConnector against it, but rejects every resource-scoped form of that ARN (the implicit connector exposes no stable account-scoped ARN to name). Without this, RunMicrovm fails AccessDenied even when the lifecycle grants are correct. This is a ceiling, not a grant: it only caps what an identity policy may allow. The matching identity-policy statement in terraform-omnistrate-aws/main.tf is UNCONDITIONAL as of the 2026-08-18 deploy-window fix (gating it on the per-instance enable_lambda_microvms parameter revoked the grants for 28-79 minutes on every deploy), so the effective permission of a workload role is decided here. Note this entry is itself unconditional, so every account bootstrapped from this version raises the ceiling - it is NOT a per-account opt-in; accounts whose boundary predates it cap those identity grants to nothing.",
+    "scope": "boundary",
+    "effect": "Allow",
+    "actions": [
+      "lambda:PassNetworkConnector"
+    ],
+    "resources": [
+      "*"
+    ]
+  },
+  {
+    "sid": "IAMScopedToPavoNames",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": [
+      "iam:DeleteRole",
+      "iam:GetRole",
+      "iam:ListRoles",
+      "iam:PassRole",
+      "iam:PutRolePolicy",
+      "iam:DeleteRolePolicy",
+      "iam:GetRolePolicy",
+      "iam:AttachRolePolicy",
+      "iam:DetachRolePolicy",
+      "iam:ListAttachedRolePolicies",
+      "iam:ListRolePolicies",
+      "iam:ListInstanceProfilesForRole",
+      "iam:ListRoleTags",
+      "iam:UpdateAssumeRolePolicy",
+      "iam:TagRole",
+      "iam:UntagRole"
+    ],
+    "resources": [
+      "arn:aws:iam::*:role/pavo-*",
+      "arn:aws:iam::*:role/keda-*"
+    ]
+  },
+  {
+    "sid": "IAMCreateRolesOnlyWithBoundary",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": [
+      "iam:CreateRole",
+      "iam:PutRolePermissionsBoundary"
+    ],
+    "resources": [
+      "arn:aws:iam::*:role/pavo-*",
+      "arn:aws:iam::*:role/keda-*"
+    ],
+    "conditions": {
+      "ArnLike": {
+        "iam:PermissionsBoundary": "arn:aws:iam::*:policy/pavo-permission-boundary-*"
+      }
+    }
+  },
+  {
+    "sid": "DenyCreateRoleWithoutBoundary",
+    "effect": "Deny",
+    "actions": ["iam:CreateRole"],
+    "resources": [
+      "arn:aws:iam::*:role/pavo-*",
+      "arn:aws:iam::*:role/keda-*"
+    ],
+    "conditions": {
+      "Null": {
+        "iam:PermissionsBoundary": "true"
+      }
+    }
+  },
+  {
+    "sid": "DenyDeleteRolePermissionsBoundary",
+    "effect": "Deny",
+    "actions": ["iam:DeleteRolePermissionsBoundary"],
+    "resources": ["*"]
+  },
+  {
+    "sid": "ServiceLinkedRoleCreate",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": ["iam:CreateServiceLinkedRole"],
+    "resources": [
+      "arn:aws:iam::*:role/aws-service-role/rds.amazonaws.com/AWSServiceRoleForRDS",
+      "arn:aws:iam::*:role/aws-service-role/elasticache.amazonaws.com/AWSServiceRoleForElastiCache*",
+      "arn:aws:iam::*:role/aws-service-role/elasticfilesystem.amazonaws.com/*"
+    ],
+    "conditions": {
+      "StringLike": {
+        "iam:AWSServiceName": [
+          "rds.amazonaws.com",
+          "elasticache.amazonaws.com",
+          "elasticfilesystem.amazonaws.com"
+        ]
+      }
+    }
+  },
+  {
+    "sid": "ServiceLinkedRolePolicyAttach",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": [
+      "iam:AttachRolePolicy",
+      "iam:PutRolePolicy"
+    ],
+    "resources": [
+      "arn:aws:iam::*:role/aws-service-role/rds.amazonaws.com/AWSServiceRoleForRDS",
+      "arn:aws:iam::*:role/aws-service-role/elasticache.amazonaws.com/AWSServiceRoleForElastiCache*",
+      "arn:aws:iam::*:role/aws-service-role/elasticfilesystem.amazonaws.com/*"
+    ]
+  },
+  {
+    "sid": "SSMRead",
+    "effect": "Allow",
+    "actions": [
+      "ssm:GetParameter",
+      "ssm:GetParameters",
+      "ssm:GetParametersByPath"
+    ],
+    "resources": ["arn:aws:ssm:*:*:parameter/pavo/*"]
+  },
+  {
+    "sid": "SecretsManagerCreateRDSSecret",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": ["secretsmanager:CreateSecret"],
+    "resources": ["*"],
+    "conditions": {
+      "StringLike": {
+        "secretsmanager:Name": "rds!*"
+      }
+    }
+  },
+  {
+    "sid": "SecretsManagerTagRDSSecret",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": [
+      "secretsmanager:TagResource",
+      "secretsmanager:UntagResource"
+    ],
+    "resources": ["arn:aws:secretsmanager:*:*:secret:rds!*"]
+  },
+  {
+    "sid": "SecretsManagerScopedRead",
+    "effect": "Allow",
+    "actions": [
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:DescribeSecret"
+    ],
+    "resources": ["arn:aws:secretsmanager:*:*:secret:rds!*"]
+  },
+  {
+    "sid": "EC2CreateSecurityGroupWithRequestTag",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": ["ec2:CreateSecurityGroup"],
+    "resources": ["*"],
+    "conditions": {
+      "StringEquals": {
+        "aws:RequestTag/managed_by": "pavo"
+      }
+    }
+  },
+  {
+    "sid": "EC2CreateSecurityGroupInVpc",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": ["ec2:CreateSecurityGroup"],
+    "resources": ["arn:aws:ec2:*:*:vpc/*"]
+  },
+  {
+    "sid": "EC2VpcEndpointMutations",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": [
+      "ec2:CreateVpcEndpoint",
+      "ec2:ModifyVpcEndpoint",
+      "ec2:DeleteVpcEndpoints"
+    ],
+    "resources": [
+      "arn:aws:ec2:*:*:vpc-endpoint/*",
+      "arn:aws:ec2:*:*:vpc/*",
+      "arn:aws:ec2:*:*:subnet/*",
+      "arn:aws:ec2:*:*:security-group/*",
+      "arn:aws:ec2:*:*:route-table/*"
+    ]
+  },
+  {
+    "sid": "EC2NetworkInterfaceForMountTargetsAndEndpoints",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": [
+      "ec2:CreateNetworkInterface",
+      "ec2:DeleteNetworkInterface",
+      "ec2:ModifyNetworkInterfaceAttribute"
+    ],
+    "resources": [
+      "arn:aws:ec2:*:*:network-interface/*",
+      "arn:aws:ec2:*:*:subnet/*",
+      "arn:aws:ec2:*:*:security-group/*"
+    ]
+  },
+  {
+    "sid": "EC2SecurityGroupMutationsTaggedPavo",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": [
+      "ec2:DeleteSecurityGroup",
+      "ec2:AuthorizeSecurityGroupIngress",
+      "ec2:RevokeSecurityGroupIngress",
+      "ec2:AuthorizeSecurityGroupEgress",
+      "ec2:RevokeSecurityGroupEgress"
+    ],
+    "resources": ["*"],
+    "conditions": {
+      "StringEquals": {
+        "aws:ResourceTag/managed_by": "pavo"
+      }
+    }
+  },
+  {
+    "sid": "EC2TagWritesScopedResources",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": [
+      "ec2:CreateTags",
+      "ec2:DeleteTags"
+    ],
+    "resources": [
+      "arn:aws:ec2:*:*:security-group/*",
+      "arn:aws:ec2:*:*:security-group-rule/*",
+      "arn:aws:ec2:*:*:vpc-endpoint/*",
+      "arn:aws:ec2:*:*:network-interface/*"
+    ]
+  },
+  {
+    "sid": "KMSUseOnCustomerKey",
+    "effect": "Allow",
+    "actions": [
+      "kms:DescribeKey",
+      "kms:Decrypt",
+      "kms:Encrypt",
+      "kms:ReEncrypt*",
+      "kms:GenerateDataKey",
+      "kms:GenerateDataKeyWithoutPlaintext"
+    ],
+    "resources": ["*"],
+    "conditions": {
+      "StringLike": {
+        "kms:ViaService": [
+          "rds.*.amazonaws.com",
+          "secretsmanager.*.amazonaws.com",
+          "elasticache.*.amazonaws.com",
+          "elasticfilesystem.*.amazonaws.com",
+          "s3.*.amazonaws.com"
+        ]
+      }
+    }
+  },
+  {
+    "sid": "KMSDescribeCustomerKeyDirect",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": ["kms:DescribeKey"],
+    "resources": ["*"]
+  },
+  {
+    "sid": "KMSGrantsForAWSResources",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": [
+      "kms:CreateGrant",
+      "kms:ListGrants",
+      "kms:RevokeGrant"
+    ],
+    "resources": ["*"],
+    "conditions": {
+      "Bool": {
+        "kms:GrantIsForAWSResource": "true"
+      }
+    }
+  }
+]
