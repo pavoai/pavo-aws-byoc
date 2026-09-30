@@ -5,18 +5,17 @@ into your AWS account, published so your security team can review it. It is
 generated from Pavo's private source repository. Nothing here is consumed
 directly: it isn't used by the installer, by Omnistrate, or by any release.
 
-- Snapshot of private commit `60d0e5cf31ae`, published 2026-09-28T12:07:56Z.
+- Snapshot of private commit `a4166869c28a`, published 2026-09-30T17:55:49Z.
 - `PROVENANCE.json` lists the SHA-256 of every file and the commit it came from.
 - Pull requests and issues aren't accepted here. To report a security issue,
   see [SECURITY.md](SECURITY.md).
 
-## The three modules
+## The two modules
 
 | Module | Applied by | Files |
 |---|---|---|
 | [`pavo-bootstrap-aws/`](pavo-bootstrap-aws/) | customer | 34 |
 | [`terraform-omnistrate-aws/`](terraform-omnistrate-aws/) | omnistrate | 17 |
-| [`pavo-customer-bootstrap/`](pavo-customer-bootstrap/) | pavo-ops (cloud) / in-cluster job (self-hosted) | 8 |
 
 A deployment runs them in this order:
 
@@ -29,10 +28,10 @@ A deployment runs them in this order:
    runner applies it in your account for each Pavo instance. It creates the
    instance's data stores (RDS, ElastiCache, S3, EFS, SQS/SNS), its IAM roles,
    and its Kubernetes namespace and secrets.
-3. **[`pavo-customer-bootstrap/`](pavo-customer-bootstrap/)** — the identity
-   setup. With cloud identity, Pavo applies it in Pavo's identity service and
-   nothing is created in your account. With self-hosted identity, it runs as a
-   Kubernetes Job in your cluster against your in-VPC Zitadel.
+
+Identity setup (Zitadel org, project, OIDC app, optional IdP) is applied by
+Pavo, or by an in-cluster Job when you self-host Zitadel. That module is not
+in this review copy.
 
 Start with [docs/review-guide.md](docs/review-guide.md).
 
@@ -60,7 +59,7 @@ This copy is not signed, and nothing ties a running deployment to it:
   after this snapshot.
 - You apply `pavo-bootstrap-aws` from the `pavoai/pavo-bootstrap-aws`
   repository at the version you pin, which may differ from this snapshot.
-- With self-hosted identity, `pavo-customer-bootstrap` runs from the signed
+- With self-hosted identity, the identity Job runs from the signed
   `zitadel-provisioner` image, which is built separately from this copy.
 
 This repository has no licence. You may read it; it grants no right to reuse,

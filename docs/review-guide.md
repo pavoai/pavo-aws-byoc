@@ -2,7 +2,7 @@
 
 ## Suggested order
 
-1. [architecture.md](architecture.md): the three stages and who runs what.
+1. [architecture.md](architecture.md): the stages and who runs what.
 2. [permissions.md](permissions.md): IAM, the permission boundary, RBAC and
    image admission.
 3. [network-and-egress.md](network-and-egress.md): what your VPC talks to.

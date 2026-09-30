@@ -448,7 +448,7 @@ table: Omnistrate change it without notice, and three parameters that existed on
 the account config, and at least one of them contradicts the template default, so
 check every value on the stack-creation screen instead of clicking through.
 
-| Parameter | Template default | Standard cell | Private cell (BCNC shape) |
+| Parameter | Template default | Standard cell | Private cell (strict / air-gapped shape) |
 |---|---|---|---|
 | `IsBYOCPrivateAccount` | `false` | `false` | **`true`** — selects the private EKS cluster and Lambda-based agent install |
 | `EnablePrivateArtifactRegistry` | `false` | `false` | **`true`** — without it the cell cannot read charts or images from the private registry, so nothing pulls |

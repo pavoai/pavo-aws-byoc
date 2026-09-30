@@ -8,9 +8,9 @@ StorageClass, Elastic Cloud deployment) on top of:
 - [`pavo-bootstrap-aws/`](../pavo-bootstrap-aws/README.md) — customer-applied
   cell-scope bootstrap (IAM boundaries, ESO/Reloader Helm, EKS access entry,
   IngressClass, ClusterIssuer).
-- [`pavo-customer-bootstrap/`](../pavo-customer-bootstrap/README.md) — Pavo-applied
-  customer-scope identity bootstrap (Zitadel org/project/OIDC app/IdPs/login
-  policy, every identity runtime value this module exposes).
+- `pavo-customer-bootstrap/` — Pavo-applied customer-scope identity bootstrap
+  (Zitadel org/project/OIDC app/IdPs/login policy, every identity runtime
+  value this module exposes). Not included in the public review copy.
 
 Runs inside the Omnistrate Terraform runner; state lives in Omnistrate.
 

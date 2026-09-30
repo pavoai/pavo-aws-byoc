@@ -1,15 +1,16 @@
 # Architecture
 
-A Pavo deployment on AWS uses three Terraform modules, applied by different
-parties, with separate state.
+A Pavo deployment on AWS uses two Terraform modules published here, applied by
+different parties, with separate state. Identity setup is a third step that
+is not in this review copy.
 
-## The three stages
+## The stages
 
 | Stage | Module | Who applies it | When | Credentials | State |
 |---|---|---|---|---|---|
 | 1. Cell bootstrap | `pavo-bootstrap-aws/` | You | Once per deployment cell (one EKS cluster), and on upgrades you choose | Your AWS credentials | Your S3 backend (`scripts/create-state-backend.sh` creates one) |
 | 2. Instance infrastructure | `terraform-omnistrate-aws/` | Omnistrate's Terraform runner, in your account | Every instance create, modify, upgrade or delete | The Omnistrate runner role in your account, with cluster-admin through the EKS access entry stage 1 creates | Omnistrate-managed |
-| 3. Identity | `pavo-customer-bootstrap/` | Cloud identity: Pavo operators. Self-hosted identity: a Kubernetes Job that stage 2 creates | Once per customer | Cloud: Pavo's credentials for its identity service. Self-hosted: a machine key for your in-VPC Zitadel | Cloud: a Pavo-owned bucket. Self-hosted: an S3 bucket in your account |
+| 3. Identity (not published) | Pavo-applied, or an in-cluster Job that stage 2 creates | Cloud identity: Pavo operators. Self-hosted identity: a Kubernetes Job | Once per customer | Cloud: Pavo's credentials for its identity service. Self-hosted: a machine key for your in-VPC Zitadel | Cloud: a Pavo-owned bucket. Self-hosted: an S3 bucket in your account |
 
 Stage 1 must run before stage 2. Stage 2 reads the permission boundary's ARN
 from `/pavo/shared/permission_boundary_arn` in SSM and fails without it.
@@ -60,12 +61,13 @@ Per instance:
 
 See [inputs-contract.md](inputs-contract.md) for every input and its source.
 
-### Stage 3: `pavo-customer-bootstrap/`
+### Stage 3: identity (not in this repository)
 
 One Zitadel organization, project and OIDC application for your hostname,
 plus optionally one external identity provider (Google, OIDC or SAML) and a
 login policy. With cloud identity these live in Pavo's shared Zitadel tenant,
-one organization per customer; nothing is created in your account.
+one organization per customer; nothing is created in your account. The
+Terraform that creates those objects is not published here.
 
 ## Modes
 
