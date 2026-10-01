@@ -117,7 +117,7 @@ variable "rds_deletion_protection" {
 }
 
 variable "cell_kms_key_arn" {
-  description = "The cell's single customer-managed KMS key ARN (or alias ARN) — encrypts everything this instance stores at rest under the customer's own key: RDS storage + master-password secret, application S3 (onboarding + intern_data), EFS, self-hosted Elasticsearch EBS + snapshots, and Zitadel resources (and, in pavo-bootstrap-aws, the in-VPC observability volumes). One key for the whole deployment: least customer effort, uniform key custody. Renamed from db_kms_key_arn (it never only covered the DB). Required. Both 'arn:aws:kms:...:key/UUID' and 'arn:aws:kms:...:alias/name' formats are accepted. NOTE: this supports only the commercial AWS partition (arn:aws:...). GovCloud and China partitions require partition-aware policy resources (policy-statements.json hardcodes 'arn:aws:' in many resource ARNs); deferred to a follow-up."
+  description = "The cell's single customer-managed KMS key ARN (or alias ARN) — encrypts the following at rest under the customer's own key: RDS storage + master-password secret, application S3 (onboarding + intern_data), EFS (filesystems created on strict-posture instances; an existing filesystem keeps its key), self-hosted Elasticsearch EBS + snapshots, and Zitadel resources (and, in pavo-bootstrap-aws, the in-VPC observability volumes). One key for the whole deployment: least customer effort, uniform key custody. Renamed from db_kms_key_arn (it never only covered the DB). Required. Both 'arn:aws:kms:...:key/UUID' and 'arn:aws:kms:...:alias/name' formats are accepted. NOTE: this supports only the commercial AWS partition (arn:aws:...). GovCloud and China partitions require partition-aware policy resources (policy-statements.json hardcodes 'arn:aws:' in many resource ARNs); deferred to a follow-up."
   type        = string
 
   validation {
@@ -190,8 +190,7 @@ variable "network_posture" {
                      strict instance fails fast unless the cell has the private CA
                      installed (/pavo/cells/<cluster>/private_ca_ready) AND CNI
                      NetworkPolicy support (/pavo/cells/<cluster>/network_policy_ready).
-    NOT claimed by strict, and must not be told to a customer until proven on
-    an internal test instance: suppression of the public DNS record. strict sets an empty
+    Not yet verified on a test instance: suppression of the public DNS record. strict sets an empty
     external-dns hostname annotation, but that is a no-op if external-dns runs
     with --source=ingress rather than --source=service, and
     endpointConfiguration.networkingType stays PUBLIC (an Omnistrate-owned

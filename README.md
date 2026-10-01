@@ -5,7 +5,7 @@ into your AWS account, published so your security team can review it. It is
 generated from Pavo's private source repository. Nothing here is consumed
 directly: it isn't used by the installer, by Omnistrate, or by any release.
 
-- Snapshot of private commit `748a38b5568a`, published 2026-10-01T11:22:11Z.
+- Snapshot of private commit `ff845f645e63`, published 2026-10-01T18:10:15Z.
 - `PROVENANCE.json` lists the SHA-256 of every file and the commit it came from.
 - Pull requests and issues aren't accepted here. To report a security issue,
   see [SECURITY.md](SECURITY.md).

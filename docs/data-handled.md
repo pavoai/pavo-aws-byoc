@@ -9,13 +9,14 @@
 | RDS PostgreSQL | Application data | Cell key | TLS available |
 | RDS PostgreSQL for Temporal (`temporal_mode = "self_hosted"`) | Workflow state | Cell key | TLS (RDS CA bundle shipped to the pods) |
 | ElastiCache Redis (3 groups) | Caches and queues | Enabled (AWS-managed) | **Not encrypted**; traffic stays inside the VPC |
-| EFS | Shared files for the workloads | Cell key | — |
+| EFS | Shared files for the workloads | Cell key for filesystems created on strict-posture instances; AWS-managed key otherwise. An existing filesystem keeps the key it was created with and is never replaced to change it | — |
 | S3 `onboarding` and `data` buckets | Uploaded and processed files | Cell key | HTTPS |
 | S3 Elasticsearch snapshots (`es_mode = "self_hosted"`) | Search index snapshots | Cell key | HTTPS |
 | S3 identity state (`zitadel_mode = "self_hosted"`) | Terraform state for the identity Job | Cell key | HTTPS |
 | SQS queues | Work items, which may reference customer data | SSE-SQS | HTTPS |
 | SNS topics (`data_fetcher`, `dedup`, `connector_sync`) | Fan-out to the queues | AWS-managed `aws/sns` key (all three; not the cell CMK) | HTTPS |
 | EBS volumes on the `gp3-cmk` storage class (stage 1, with `enable_observability`) | The in-VPC observability stack | Cell key | — |
+| EBS volumes on the `pd-balanced` storage class (stage 1): the GitHub and Bitbucket connector PVCs, and the telemetry export queue with `grafana_mode = "cloud"` | Connector working data; telemetry waiting to be sent | Cell key when `pd_balanced_use_cell_key = true`; otherwise account EBS default encryption only (encrypted only if it is on, with the account's default EBS key). Volumes created before the flag was set keep their original encryption | — |
 
 Buckets block public access, and versioning is on for the application and
 identity-state buckets (`terraform-omnistrate-aws/main.tf`,
@@ -56,4 +57,4 @@ Depending on modes and flags (see [network-and-egress.md](network-and-egress.md)
 - **Sandbox file mounts** use a Google Cloud Storage service account only if
   `sandbox_gcsfuse_enabled` is set.
 
-Bedrock calls stay in your account's region over PrivateLink.
+Bedrock calls enter through the PrivateLink endpoint in your region (with VPC endpoints enabled, the default). Claude models are invoked through AWS's US cross-region inference profiles (us.*), so a request may be processed in us-east-1, us-east-2 or us-west-2; it stays within US AWS regions.

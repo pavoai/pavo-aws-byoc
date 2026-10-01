@@ -905,10 +905,19 @@ removed {
 # EFS (RWX PVCs — Filestore equivalent)
 # -----------------------------------------------------------------------------
 
+locals {
+  # The cell key applies to filesystems created on strict instances; standard
+  # instances get null, i.e. the AWS-managed EFS key, as before.
+  # network_posture is fixed at instance creation (modifiable: false in the
+  # spec). kms_key_id is ForceNew, so the resource below ignores later changes
+  # to it: an existing filesystem is never replaced because of its key,
+  # whatever key it was created with.
+  efs_kms_key_id = var.network_posture == "strict" ? var.cell_kms_key_arn : null
+}
+
 resource "aws_efs_file_system" "pavo" {
-  encrypted = true
-  # ForceNew: changing this replaces the filesystem and drops every PVC.
-  kms_key_id = var.cell_kms_key_arn
+  encrypted  = true
+  kms_key_id = local.efs_kms_key_id
 
   lifecycle_policy {
     transition_to_ia = "AFTER_30_DAYS"
@@ -950,6 +959,13 @@ resource "aws_efs_file_system" "pavo" {
     # mutation on aws:ResourceTag/managed_by=pavo, and losing it would lock the
     # runner out of its own filesystem, including out of re-tagging it.
     "omnistrate.com/managed-by" = "omnistrate"
+  }
+
+  lifecycle {
+    # kms_key_id is ForceNew: a change would replace the filesystem and every
+    # PVC on it. local.efs_kms_key_id only takes effect when a filesystem is
+    # created; an existing one keeps the key it has.
+    ignore_changes = [kms_key_id]
   }
 }
 

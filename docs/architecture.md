@@ -27,7 +27,7 @@ from `/pavo/shared/permission_boundary_arn` in SSM and fails without it.
 - **Cluster add-ons (Helm):** External Secrets Operator, Stakater Reloader, the
   Sigstore policy controller, and optionally the ECK operator
   (`enable_eck`) and an in-VPC observability stack (`enable_observability`).
-- **Kubernetes objects:** the `pd-balanced` storage class (plus `gp3-cmk`,
+- **Kubernetes objects:** the `pd-balanced` storage class (on the cell key with `pd_balanced_use_cell_key`; plus `gp3-cmk`,
   backed by the cell key, with `enable_observability`), the
   `pavo-nginx` ingress class, a Let's Encrypt cluster issuer, optionally a
   private CA (`install_private_ca`), and the image-signature policies.

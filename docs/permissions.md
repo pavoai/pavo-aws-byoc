@@ -20,6 +20,8 @@ its permissions boundary, so a role's effective permissions are the
 intersection of its own policy and the boundary. A mistake in a stage 2
 policy can't grant more than the boundary allows.
 
+Statements marked `"switch": "<variable>"` are in the boundary only while that stage 1 variable is true. The only one is `allow_lambda_microvms` (default `true`), which controls the two Lambda MicroVM statements. Set it to `false` to keep MicroVM actions out of your account's boundary: the policy stage 1 applies is then `rendered-permission-boundary.json` without those two statements (`local.boundary_statements` in `pavo-bootstrap-aws/main.tf`).
+
 `pavo-bootstrap-aws/RUNBOOKS.md` ("Permission boundary scoping &
 verification") explains each statement and how to check an edit.
 
