@@ -117,7 +117,7 @@ variable "rds_deletion_protection" {
 }
 
 variable "cell_kms_key_arn" {
-  description = "The cell's single customer-managed KMS key ARN (or alias ARN) — encrypts everything this instance stores at rest under the customer's own key: RDS storage + master-password secret, self-hosted Elasticsearch EBS + snapshots, and Zitadel resources (and, in pavo-bootstrap-aws, the in-VPC observability volumes). One key for the whole deployment: least customer effort, uniform key custody. Renamed from db_kms_key_arn (it never only covered the DB). Required. Both 'arn:aws:kms:...:key/UUID' and 'arn:aws:kms:...:alias/name' formats are accepted. NOTE: this supports only the commercial AWS partition (arn:aws:...). GovCloud and China partitions require partition-aware policy resources (policy-statements.json hardcodes 'arn:aws:' in many resource ARNs); deferred to a follow-up."
+  description = "The cell's single customer-managed KMS key ARN (or alias ARN) — encrypts everything this instance stores at rest under the customer's own key: RDS storage + master-password secret, application S3 (onboarding + intern_data), EFS, self-hosted Elasticsearch EBS + snapshots, and Zitadel resources (and, in pavo-bootstrap-aws, the in-VPC observability volumes). One key for the whole deployment: least customer effort, uniform key custody. Renamed from db_kms_key_arn (it never only covered the DB). Required. Both 'arn:aws:kms:...:key/UUID' and 'arn:aws:kms:...:alias/name' formats are accepted. NOTE: this supports only the commercial AWS partition (arn:aws:...). GovCloud and China partitions require partition-aware policy resources (policy-statements.json hardcodes 'arn:aws:' in many resource ARNs); deferred to a follow-up."
   type        = string
 
   validation {

@@ -721,8 +721,10 @@ pair above, using `var.runner_role_arn` instead of your own): `delete-access-ent
 ## Setting up the CMK (separate from bootstrap; before workload deploys)
 
 One CMK per cell encrypts **everything** — RDS storage, the RDS-managed master
-secret, and (on self-hosted cells) the ES / in-VPC-observability EBS volumes.
-Its ARN is the instance `cell_kms_key_arn` apiParameter. There are two cases:
+secret, application S3 (`onboarding` + `intern_data`), EFS, and (on self-hosted
+cells) the ES / in-VPC-observability EBS volumes. SNS topics stay on the
+AWS-managed `aws/sns` key, not this CMK. Its ARN is the instance
+`cell_kms_key_arn` apiParameter. There are two cases:
 
 ### Quick setup: same-account key (dev/test cells) — `scripts/create-cmk.sh`
 
@@ -826,7 +828,9 @@ explicit workload/ESO grants on top:
          "StringEquals": {
            "kms:ViaService": [
              "rds.<REGION>.amazonaws.com",
-             "secretsmanager.<REGION>.amazonaws.com"
+             "secretsmanager.<REGION>.amazonaws.com",
+             "s3.<REGION>.amazonaws.com",
+             "elasticfilesystem.<REGION>.amazonaws.com"
            ]
          }
        }
@@ -929,10 +933,18 @@ explicit workload/ESO grants on top:
 4. Paste the CMK ARN into the Omnistrate UI under `cell_kms_key_arn`. The
    instance won't provision until set (`required: true`).
 
-5. **Note on the same CMK serving dual duty**: this single CMK encrypts both
-   RDS storage *and* the master-password Secrets Manager secret. Statements
-   2-4 grant the workload role what RDS needs to provision both. Statement 5
-   grants the ESO role what it needs to decrypt the secret at runtime.
+5. **Note on the same CMK serving several duties**: this single CMK encrypts
+   RDS storage, the master-password Secrets Manager secret, application S3,
+   EFS, and (when those modes are on) ES snapshots / Zitadel state / EBS.
+   Statements 2-4 grant the runner what RDS and EFS need to provision, and
+   what S3 object encryption needs at apply time. The instance IRSA
+   (`pavo-role-<instance>`) also needs `kms:Decrypt`/`GenerateDataKey` via
+   `s3.<REGION>.amazonaws.com` — that grant lives on the role's identity
+   policy (`pavo_permissions`); with the default key policy (root → `kms:*`)
+   that is enough. A customer-governed key policy must name that IRSA the
+   same way, or `PutObject`/`GetObject` fail after the buckets switch to
+   `aws:kms`. Statement 5 grants the ESO role what it needs to decrypt the
+   RDS secret at runtime. SNS is not on this key.
 
 6. The `cell_kms_key_arn` value can be either a **key ARN** (`arn:aws:kms:<region>:<account>:key/<uuid>`)
    or an **alias ARN** (`arn:aws:kms:<region>:<account>:alias/<name>`). Both
@@ -1010,7 +1022,7 @@ both unset — the default — nothing leaves the cluster.
 |---|---|---|
 | `enable_observability` | **Pavo operator**, per cell, at bootstrap | Installs the whole stack. Default `false`. Set `true` on any cell that will host a `grafana_mode=self_hosted` instance (the BYOC instance default). |
 | `observability_grafana_host` | Pavo operator | Public hostname Grafana serves at; ingress host becomes `grafana.<this>`. Required when `enable_observability = true`. |
-| `cell_kms_key_arn` | **Customer** (the one CMK) | Encrypts the observability PVCs (`gp3-cmk`). Same key the instance module uses for RDS/ES/Zitadel — one key for everything. |
+| `cell_kms_key_arn` | **Customer** (the one CMK) | Encrypts the observability PVCs (`gp3-cmk`). Same key the instance module uses for RDS, application S3, EFS, ES, and Zitadel — one key for everything. SNS stays on `aws/sns`. |
 | `pavo_app_alerts_enabled` | Pavo operator | Also routes Prometheus alerts to Pavo via the in-VPC sanitizer (8-key metadata only). Default `false` = customer-webhook leg only. Requires a real signed `sanitizer_image` — the sanitizer stays off until that image is built (the cell ClusterImagePolicy admits only signed digests). |
 | `customer_alert_webhook_url` | Customer (optional) | Alertmanager posts raw alerts here (via a Secret, never a break-glass-readable ConfigMap). Empty = no customer leg. |
 

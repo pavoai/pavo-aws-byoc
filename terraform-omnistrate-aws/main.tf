@@ -465,8 +465,10 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "onboarding" {
   bucket = aws_s3_bucket.onboarding.id
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = var.cell_kms_key_arn
     }
+    bucket_key_enabled = true
   }
 }
 
@@ -516,8 +518,10 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "intern_data" {
   bucket = aws_s3_bucket.intern_data.id
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = var.cell_kms_key_arn
     }
+    bucket_key_enabled = true
   }
 }
 
@@ -549,6 +553,9 @@ resource "aws_s3_bucket_cors_configuration" "intern_data" {
 # SNS topics
 resource "aws_sns_topic" "data_fetcher" {
   name = "pavo-data-fetcher-topic-${var.instance_id}"
+  # Same AWS-managed SNS key as connector_sync. Not the cell CMK: SNS→SQS
+  # delivery works without extra key-policy grants.
+  kms_master_key_id = "alias/aws/sns"
 
   tags = {
     Name = "pavo-data-fetcher-topic-${var.instance_id}"
@@ -556,7 +563,8 @@ resource "aws_sns_topic" "data_fetcher" {
 }
 
 resource "aws_sns_topic" "dedup" {
-  name = "pavo-dedup-topic-${var.instance_id}"
+  name              = "pavo-dedup-topic-${var.instance_id}"
+  kms_master_key_id = "alias/aws/sns"
 
   tags = {
     Name = "pavo-dedup-topic-${var.instance_id}"
@@ -899,6 +907,8 @@ removed {
 
 resource "aws_efs_file_system" "pavo" {
   encrypted = true
+  # ForceNew: changing this replaces the filesystem and drops every PVC.
+  kms_key_id = var.cell_kms_key_arn
 
   lifecycle_policy {
     transition_to_ia = "AFTER_30_DAYS"
@@ -1008,6 +1018,25 @@ data "aws_iam_policy_document" "pavo_permissions" {
       aws_s3_bucket.intern_data.arn,
       "${aws_s3_bucket.intern_data.arn}/*",
     ]
+  }
+
+  # Cell CMK for the application buckets (sse_algorithm = aws:kms). Without
+  # this, PutObject/GetObject fail after the bucket default flips off SSE-S3.
+  # EFS at-rest crypto is the EFS service's; the app never calls KMS for it.
+  statement {
+    effect = "Allow"
+    actions = [
+      "kms:Decrypt",
+      "kms:Encrypt",
+      "kms:GenerateDataKey",
+      "kms:DescribeKey",
+    ]
+    resources = [data.aws_kms_key.cell_cmk.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["s3.${var.aws_region}.amazonaws.com"]
+    }
   }
 
   # SNS publish

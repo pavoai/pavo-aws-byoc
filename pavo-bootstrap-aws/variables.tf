@@ -357,10 +357,11 @@ variable "observability_otel_collector_chart_version" {
 variable "cell_kms_key_arn" {
   description = <<-EOT
     The cell's single customer-managed KMS key ARN — encrypts everything at rest
-    under the customer's own key (RDS, self-hosted ES + snapshots, and the in-VPC
-    observability volumes). One key for the whole deployment: least customer
-    effort, uniform key custody. Required when enable_observability = true (used
-    for the gp3-cmk StorageClass the observability PVCs bind to).
+    under the customer's own key (RDS, application S3, EFS, self-hosted ES +
+    snapshots, and the in-VPC observability volumes). One key for the whole
+    deployment: least customer effort, uniform key custody. Required when
+    enable_observability = true (used for the gp3-cmk StorageClass the
+    observability PVCs bind to).
   EOT
   type        = string
   default     = ""

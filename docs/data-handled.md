@@ -9,12 +9,12 @@
 | RDS PostgreSQL | Application data | Cell key | TLS available |
 | RDS PostgreSQL for Temporal (`temporal_mode = "self_hosted"`) | Workflow state | Cell key | TLS (RDS CA bundle shipped to the pods) |
 | ElastiCache Redis (3 groups) | Caches and queues | Enabled (AWS-managed) | **Not encrypted**; traffic stays inside the VPC |
-| EFS | Shared files for the workloads | Enabled (AWS-managed key) | — |
-| S3 `onboarding` and `data` buckets | Uploaded and processed files | SSE-S3 (AES-256) | HTTPS |
+| EFS | Shared files for the workloads | Cell key | — |
+| S3 `onboarding` and `data` buckets | Uploaded and processed files | Cell key | HTTPS |
 | S3 Elasticsearch snapshots (`es_mode = "self_hosted"`) | Search index snapshots | Cell key | HTTPS |
 | S3 identity state (`zitadel_mode = "self_hosted"`) | Terraform state for the identity Job | Cell key | HTTPS |
 | SQS queues | Work items, which may reference customer data | SSE-SQS | HTTPS |
-| SNS topics | Fan-out to the queues | `aws/sns` key | HTTPS |
+| SNS topics (`data_fetcher`, `dedup`, `connector_sync`) | Fan-out to the queues | AWS-managed `aws/sns` key (all three; not the cell CMK) | HTTPS |
 | EBS volumes on the `gp3-cmk` storage class (stage 1, with `enable_observability`) | The in-VPC observability stack | Cell key | — |
 
 Buckets block public access, and versioning is on for the application and

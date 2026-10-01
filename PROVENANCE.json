@@ -3,7 +3,7 @@
     "pavo-bootstrap-aws/.gitignore": "sha256:d1dd83f1765d53299dcf215153cb3627d8c0c9f48fee0a4452446745e75acfac",
     "pavo-bootstrap-aws/.terraform.lock.hcl": "sha256:dbf9baf0f1699ca46b4fa2fcb020826c37ef6c06eef7e716600ced00b2af35e0",
     "pavo-bootstrap-aws/README.md": "sha256:6a4f56a8745e91519962bb22587b72452f73dc6705a80dd295590409f725caf3",
-    "pavo-bootstrap-aws/RUNBOOKS.md": "sha256:e6d2d92eb9a3dd7e35ee87f3e37526ca456a54b35c46849c5a8f54b95d62bb1b",
+    "pavo-bootstrap-aws/RUNBOOKS.md": "sha256:a429931ecb17ae595e10827ac5c8bb232fe162f91f220a4d1015d74cd503ff3d",
     "pavo-bootstrap-aws/SES-EMAIL-ONBOARDING.md": "sha256:dc5476f73fb41b606708c5d210cbf2c4c1fd6ac30ea20500caa367685d845d03",
     "pavo-bootstrap-aws/image-manifest.json": "sha256:66d86985172e79deaef57f88b6d80fa571cbc071a4d76dcfe6dd6c261ce43501",
     "pavo-bootstrap-aws/main.tf": "sha256:92ee3a5cdb5f56bea703e7b1c72b03cc90fe8eaf9004e9cbe62628a61f1b1d5a",
@@ -32,13 +32,13 @@
     "pavo-bootstrap-aws/scripts/populate-provider-mirror.sh": "sha256:37eaf6b4fe593569447a9941d6fd644d7ee1ccf7c618004e0ee889b29765b0d8",
     "pavo-bootstrap-aws/scripts/preflight.sh": "sha256:f53eb26abc2ad8fa06e88baf1fa5f006d826481dcc213777ed12652a0f2c26c7",
     "pavo-bootstrap-aws/tests/consumer-root/main.tf": "sha256:9209a59a28370f915d29e260b2503e4c67c69ef593e574125fa99cc7bb58eab2",
-    "pavo-bootstrap-aws/variables.tf": "sha256:8468e85ec3baa8df1648d82b023ad93801f7cdae36f3c99a558a2d4f1f91bdd8",
+    "pavo-bootstrap-aws/variables.tf": "sha256:84770ceb4c8eff2cba6ea0822798323e1f95acade81f5d225574f8c64e3cf5f3",
     "pavo-bootstrap-aws/vpc_gateway_endpoints.tf": "sha256:1f2838d1bafe56fe3babca872975e4856a1e9673517cd5e1f054e794ece3c24b",
-    "terraform-omnistrate-aws/README.md": "sha256:bf70880807ca72673ff513082c9e3b128b9d5002ce6592cb199eccb9263e01aa",
+    "terraform-omnistrate-aws/README.md": "sha256:245b68ac2b79c762799005cae5e112a10d49640913c1006da9135c6bed50be2b",
     "terraform-omnistrate-aws/cell_gates.tf": "sha256:6f139e60ec79afae067169abf959e305035920485bee44856387d3345f9ef0d6",
     "terraform-omnistrate-aws/elasticsearch_self_hosted.tf": "sha256:aabaf9d7cf098670c37149d250c1f33e8141bed180a4a1747722112f64c84bd9",
     "terraform-omnistrate-aws/elasticsearch_snapshots.tf": "sha256:195014ba5f06d1efe04b765553f8501cfa722679366f519de8c56beaaf03c8be",
-    "terraform-omnistrate-aws/main.tf": "sha256:f324364b3c5509f61e3b7d6d1ebc222ae65fa25b4a0498ef1967bdffb2ed3059",
+    "terraform-omnistrate-aws/main.tf": "sha256:f98ffa152152c6bd26bad85346d502d9ceed29cecd92d872023555f2ff248549",
     "terraform-omnistrate-aws/network_policies.tf": "sha256:00aab4c92084166c44ab6d668eefe83bf3201002cd1ab27639bfa65c0f735582",
     "terraform-omnistrate-aws/observability_readiness.tf": "sha256:ed54e0e42f5735cedd920c31ed66e4cc5c08d806a9198f3db95ca25f53ff966f",
     "terraform-omnistrate-aws/outputs.tf": "sha256:54a29638dab345b1cd611b6108dea929fe89563d5a009f2dea8a1ed0b9dd05c2",
@@ -46,17 +46,17 @@
     "terraform-omnistrate-aws/ses.tf": "sha256:ba995d2abac38dea5796eb531d1994090b2ff3d3af7dcf57410608f7eb346dc2",
     "terraform-omnistrate-aws/temporal_rds_ca_bundle.tf": "sha256:fe7c34f5386b667caedbbb751595ac10cd16a12e72f2d45a444bacf705013d6e",
     "terraform-omnistrate-aws/temporal_self_hosted.tf": "sha256:afc46c0858ffc3a12f2ad47dab118ecd0d625c5ebeb4d1b144082e06f8a882a2",
-    "terraform-omnistrate-aws/variables.tf": "sha256:9ef9bcd54bb501ef515ff64d711388776024e063212e7ecf14122a31faf7a7ef",
+    "terraform-omnistrate-aws/variables.tf": "sha256:17987d87b3377cbe492bc156a3a86dbe8126ad5a8d16513382fb6c4bcc5658c6",
     "terraform-omnistrate-aws/vpc_endpoints.tf": "sha256:b04f5c1929f1a9d37434c542fe56546c64db1116ec036c4d0f1f28e552b37c9e",
     "terraform-omnistrate-aws/zitadel_provision.tf": "sha256:696437a56f0767106b26ce06dabec77092c08b2563570aa81c21461413ea30dd",
     "terraform-omnistrate-aws/zitadel_readiness.tf": "sha256:dc5c90ab86c41b86b98210304529ca3f260b04c03e02ce17c3d59c4999cc7665",
     "terraform-omnistrate-aws/zitadel_self_hosted.tf": "sha256:e6aa765e9a560184a168da8ea42f381391487ea1482bde5df5c1b9ac35f8da79"
   },
   "generated": {
-    "README.md": "sha256:24feb3cc79c4ec0ed895c84f149e917f0fcee68af4fb7159fdde2df84b94ae6a",
+    "README.md": "sha256:032ca1205fc4f9e39099f4bb975f05679a1d2cff8a74b866218589b9b04c41b2",
     "SECURITY.md": "sha256:4d9ddee101b44963521405323583b8eec8d1d62675a07099c16c8d23d019e920",
     "docs/architecture.md": "sha256:227f1e31046c85a6a008d819902bdae666795396e7046b33c083155f94ab2bbe",
-    "docs/data-handled.md": "sha256:4cde42531ba605512290a5905e6b2118622cfa437ac7244ecaaf8ee929382f3a",
+    "docs/data-handled.md": "sha256:d4ca5f00057d554861a1d51dfb3460fc5c5dc90e205b5ce48e07ba4fab219d5e",
     "docs/inputs-contract.md": "sha256:cb9134bb280af9406c6ccbd5cc380e33a41ed97eb5c0be1992359433eaccdc15",
     "docs/network-and-egress.md": "sha256:2ecc781973072a4a30b0ebe221beaaceefbda3001f7b189352f6f765e07d61d3",
     "docs/permissions.md": "sha256:612aa2b69b3a90259868e2a511d51f833a7a32ef1ffed4051b1c9a790b679e32",
@@ -77,17 +77,17 @@
   "modules": {
     "pavo-bootstrap-aws": {
       "applied_by": "customer",
-      "tree_sha256": "4a0b578a0a724f3735889f4dea31d19a4ec57cfc8476ea514af8e0003521a3a0"
+      "tree_sha256": "c2923a80e41cdb7686c327a58266cc3ce18629104e30d847cfbba3e5f1274391"
     },
     "terraform-omnistrate-aws": {
       "applied_by": "omnistrate",
-      "tree_sha256": "41d99b6da43014f1d0616d86f8b9644a404994e00cc5bbe53acd9f3a8c53dc0a"
+      "tree_sha256": "521feedc87287172636bbe6ad4a97205abeeb04dc487866dd30439bdd9d745df"
     }
   },
   "note": "Unsigned. Records which private commit this snapshot came from; it doesn't prove which commit any particular apply used. See README.md.",
-  "published_at": "2026-10-01T11:17:02Z",
+  "published_at": "2026-10-01T11:22:11Z",
   "schema": 1,
-  "source_commit": "d9db7112d204b5735bacf332cc073cbd29fed56c",
-  "source_commit_time": "2026-10-01T11:15:50Z",
+  "source_commit": "748a38b5568a0314581e35685914809270420a55",
+  "source_commit_time": "2026-10-01T11:21:48Z",
   "source_repo": "pavoai/pavo-terraform-templates (private)"
 }
