@@ -394,8 +394,8 @@ Each in-VPC substrate a strict/residency customer opts into is gated by an opt-i
 | `enable_eck` | ECK operator (self-hosted ES) | `es_mode` | `/pavo/cells/<cluster>/eck_ready` SSM + **fail-fast** — a `self_hosted` ES CR *hard-fails* without ECK |
 | `enable_observability` | in-VPC Grafana/Prometheus + OTel collector | `grafana_mode` | Phase-4 one-time convergence barrier (see below) |
 
-- **Default `false`, opt-in per cell** — a cloud cell must not run an idle operator / unused monitoring stack.
-- **Set `true` in `cells/<cluster>/<cluster>.tfvars`** by whoever provisions the cell: the **customer** (mirrored module, their admin, they audit it) or **Pavo** at onboarding. Recorded in tfvars so it can't silently regress; never automatic, never a runtime toggle. Self-hosted customer → both `true`, paired with the matching instance flag.
+- **Default `false`, opt-in per cell** — a cell that keeps every instance on Grafana Cloud must not run an idle operator / unused monitoring stack.
+- **Set `true` in `cells/<cluster>/<cluster>.tfvars`** by whoever provisions the cell: the **customer** (mirrored module, their admin, they audit it) or **Pavo** at onboarding. Recorded in tfvars so it can't silently regress; never automatic, never a runtime toggle. Self-hosted customer → both `true`, paired with the matching instance flag. The BYOC instance plan defaults `grafana_mode` to `self_hosted`, so a new instance on this cell uses the in-VPC stack unless someone sets `grafana_mode=cloud`. Leave `enable_observability` false only when every instance on the cell is explicitly `grafana_mode=cloud`.
 - **Cell-level, not per-instance:** the substrate is cluster-scoped (one operator / one Grafana per cell), so a per-instance flag can't create it. `es_mode`/`grafana_mode` only **route**.
 - **Both substrates are gated, for different reasons and at different points.** ES uses `eck_ready` as a *pre*-condition: a `self_hosted` ES CR hard-fails without the operator, so Phase 4 must refuse to start. Observability is gated *after* the fact, by a one-time Phase-4 convergence barrier.
 

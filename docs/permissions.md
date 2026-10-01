@@ -6,7 +6,7 @@
 |---|---|---|---|
 | Omnistrate runner role | Omnistrate, when you connect the account | Applies stage 2. Stage 1 gives it cluster-admin on this EKS cluster only (`AmazonEKSClusterAdminPolicy`, cluster scope) | `pavo-bootstrap-aws/main.tf` (`aws_eks_access_entry.runner`) |
 | External Secrets role | Stage 1 | Reads the secrets ESO syncs, and decrypts with the cell key | `pavo-bootstrap-aws/main.tf` (`pavo_eso_permissions`) |
-| Workload role (IRSA) | Stage 2 | What the application pods need: Bedrock, Lambda (optional MicroVM backend), RDS IAM auth, the instance's S3 buckets, SES, SNS and SQS | `terraform-omnistrate-aws/main.tf` (`pavo_permissions`) |
+| Workload role (IRSA) | Stage 2 | What the application pods need: Bedrock, RDS IAM auth, the instance's S3 buckets, SES, SNS and SQS | `terraform-omnistrate-aws/main.tf` (`pavo_permissions`) |
 | KEDA role | Stage 2 | Reads SQS queue attributes to scale workers | `terraform-omnistrate-aws/main.tf` (`keda_sqs`) |
 | Elasticsearch snapshot role | Stage 2, `es_mode = "self_hosted"` | Reads and writes the snapshot bucket, with the cell key | `terraform-omnistrate-aws/elasticsearch_snapshots.tf` |
 | Identity provisioner role | Stage 2, `zitadel_mode = "self_hosted"` | Reads and writes its state bucket, with the cell key | `terraform-omnistrate-aws/zitadel_provision.tf` |

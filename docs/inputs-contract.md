@@ -2,7 +2,7 @@
 
 Generated from Pavo's Omnistrate service definition and this module's variable
 declarations. It lists every input of the module and where its value comes
-from when Omnistrate runs it. 81 variables in total.
+from when Omnistrate runs it. 80 variables in total.
 
 ## Instance parameters
 
@@ -24,11 +24,10 @@ product exposes them).
 | `e2b_template_id` | `e2b_template_id` | String | no | yes | Default E2B template ID for agent computer sessions (non-GCS path). Empty keeps runtime defaults. |
 | `elastic_cloud_region` | `elastic_cloud_region` | String | yes | no | Elastic Cloud region for the ES deployment (e.g. us-east-2). |
 | `email_enabled` | `email_enabled` | String | no | yes | Master switch for this instance's email path (login + all notifications). 'true' = email on (SES on AWS, Brevo on GCP); 'false' = strict/air-gapped (no backend wired, OTP endpoints 403, invitations return a copyable link). Empty (default) derives the POSTURE-AWARE default, preserving the old enable_email_login behavior: off for self_hosted/IdP-only instances, on for cloud. Replaces enable_email_l… |
-| `enable_lambda_microvms` | `enable_lambda_microvms` | Boolean | no | yes | DEPRECATED - has no effect. The Lambda MicroVM IAM grants are now rendered unconditionally on every AWS cell. Gating them on this per-instance parameter took the grants offline for 28-79 minutes on every deploy: an early deploy phase renders Terraform without the instance parameters, so the gate evaluated false and the workload role's policy was re-applied without the MicroVM statements. This par… |
 | `es_mode` | `es_mode` | String | no | yes | Elasticsearch backend for this instance: 'cloud' (default — external Elastic Cloud, unchanged behavior) or 'self_hosted' (in-VPC Elasticsearch via ECK, EBS under the customer CMK, snapshots to a customer S3 bucket). AWS BYOC only; unused on GCP. Modifiable post-create, but switching backends is operator-gated (ES snapshot/restore) — there is no automatic data migration. Observability backend is c… |
 | `exec_runner_hmac_required` | `exec_runner_hmac_required` | Boolean | no | yes | Require HMAC signatures for calls into exec-runner. |
 | `force_destroy_buckets` | `force_destroy_buckets` | Boolean | no | yes | Whether terraform destroy empties non-empty S3 / GCS buckets. Default false (destroy errors on non-empty bucket — the safe behavior). Set true for Dev/test instances where bucket contents are disposable. Applies to both AWS and GCP modules. |
-| `grafana_mode` | `grafana_mode` | String | no | yes | Observability (metrics/Grafana) backend for this instance: 'cloud' (default — telemetry egresses to Grafana Cloud) or 'self_hosted' — this instance's metrics are collected by the in-VPC observability stack (in-VPC Prometheus scrapes each app's /metrics endpoint; Grafana + Prometheus run in-cluster), with no metrics egress to Grafana Cloud. Separate from es_mode so observability can be flipped ind… |
+| `grafana_mode` | `grafana_mode` | String | no | yes | Observability (metrics/Grafana) backend for this instance: 'self_hosted' (default — this instance's metrics are collected by the in-VPC observability stack; in-VPC Prometheus scrapes each app's /metrics endpoint; Grafana + Prometheus run in-cluster; no metrics egress to Grafana Cloud) or 'cloud' — telemetry egresses to Grafana Cloud. Separate from es_mode so observability can be flipped independe… |
 | `hubspot_api_key_override` | `hubspot_api_key` | Password | no | yes | Optional per-tenant override for the HubSpot API key used by api-gateway. When empty, the environment-level hubspot_api_key secret is used. |
 | `hubspot_client_secret_override` | `hubspot_client_secret` | Password | no | yes | Optional per-tenant override for the HubSpot client secret used by api-gateway webhook verification. When empty, the environment-level hubspot_client_secret secret is used. |
 | `hubspot_enabled` | `hubspot_enabled` | Boolean | no | yes | Per-customer kill switch for the HubSpot integration in api-gateway. When false (default), contact upserts on signup/login and the /hubspot/event webhook are short-circuited so no customer PII is sent to HubSpot. |

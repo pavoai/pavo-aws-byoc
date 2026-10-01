@@ -30,6 +30,7 @@ Pods can reach the internet through your NAT gateway. The deployment contacts:
 | Terraform registry | Provider downloads by the Omnistrate runner | standard posture only |
 | Let's Encrypt | Public TLS certificates for the ingress | always in standard |
 | Elastic Cloud | Search, when `es_mode = "cloud"` | `es_mode` |
+| Grafana Cloud | Metrics and dashboards, only when `grafana_mode = "cloud"` (BYOC default is `self_hosted`, which stays in-VPC) | `grafana_mode` |
 | Temporal Cloud | Workflow engine, when `temporal_mode = "cloud"` | `temporal_mode` |
 | Pavo identity service (`auth.pavoai.com`) | Sign-in, when `zitadel_mode = "cloud"` | `zitadel_mode` |
 | Pavo alert endpoint | Forwarding of sanitised alert metadata | `pavo_app_alerts_enabled` (stage 1) |

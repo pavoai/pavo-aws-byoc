@@ -1103,62 +1103,6 @@ data "aws_iam_policy_document" "pavo_permissions" {
   # scripts/simulate-policy.py carries the same three-part gate; keep them in
   # step.
 
-  # Lambda MicroVMs computer backend — the sandbox/exec runtime can run on AWS
-  # Lambda MicroVMs instead of E2B. The lifecycle + image-read calls go through
-  # the "lambda:" IAM namespace (the service's signingName is "lambda", NOT
-  # "lambda-microvms"), so without these grants every RunMicrovm/GetMicrovm call
-  # is AccessDenied even though nothing else about the role changes. Scoped to
-  # this account's microvm and microvm-image ARNs. NO image-write actions
-  # (CreateMicrovmImage etc.) — image builds stay in the vendor account.
-  #
-  # UNCONDITIONAL — and it has to stay that way. These statements were gated on
-  # var.enable_lambda_microvms, a per-instance Omnistrate parameter. Every
-  # instance deploy runs an early Terraform phase in which that parameter is
-  # absent, so the gate rendered false, this policy was re-applied WITHOUT the
-  # MicroVM statements, and a later phase put them back. Each deploy therefore
-  # opened a window in which every sandbox on the cell failed AccessDenied on
-  # RunMicrovm — 2026-08-17 09:48Z→11:07Z and 2026-08-18 12:36Z→13:04Z in the
-  # role's CloudTrail PutRolePolicy history. Any gate sourced from a per-instance
-  # value reintroduces that outage; do not add one back.
-  #
-  # The account-level control is the permission boundary attached to
-  # aws_iam_role.pavo below, whose content comes from
-  # pavo-bootstrap-aws/policy-statements.json: in an account whose boundary omits
-  # the MicroVM ceiling these grants cap to nothing (implicit deny, not an
-  # error). Verify against a live role with scripts/verify-microvm-grants.py.
-  statement {
-    effect = "Allow"
-    actions = [
-      "lambda:RunMicrovm",
-      "lambda:GetMicrovm",
-      "lambda:ListMicrovms",
-      "lambda:SuspendMicrovm",
-      "lambda:ResumeMicrovm",
-      "lambda:TerminateMicrovm",
-      "lambda:CreateMicrovmAuthToken",
-      # Read-only microvm-image lookups.
-      "lambda:GetMicrovmImage",
-      "lambda:ListMicrovmImages",
-      "lambda:ListMicrovmImageVersions",
-    ]
-    resources = [
-      "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:microvm*",
-      "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:microvm-image*",
-    ]
-  }
-
-  # RunMicrovm implicitly attaches the INTERNET_EGRESS network connector and the
-  # authorizer checks lambda:PassNetworkConnector against it — but it rejects
-  # EVERY resource-scoped form of that ARN (the implicit connector exposes no
-  # stable account-scoped ARN to name), so this MUST be Resource "*". Without it
-  # RunMicrovm fails AccessDenied on PassNetworkConnector even when the lifecycle
-  # grants above are correct. Unconditional for the same reason as above.
-  statement {
-    effect    = "Allow"
-    actions   = ["lambda:PassNetworkConnector"]
-    resources = ["*"]
-  }
-
   # SES SendEmail for api-gateway transactional email (email_enabled only),
   # scoped to THIS instance's sending identity and its From address.
   dynamic "statement" {

@@ -185,15 +185,17 @@ variable "eck_operator_chart_version" {
 # In-VPC observability (self-hosted Grafana/Prometheus) — opt-in per cell.
 # Mirrors enable_eck. When true, bootstrap installs the metrics stack + the OTel
 # collector into the pavo-observability namespace. See README "Cell self-hosting
-# flags". No readiness SSM: a grafana_mode=self_hosted misroute just drops
-# telemetry (soft), unlike ECK's hard failure.
+# flags". The BYOC instance plan defaults grafana_mode to self_hosted, so cells
+# that accept that default need this flag true (Phase 4 convergence barrier).
 # -----------------------------------------------------------------------------
 variable "enable_observability" {
   description = <<-EOT
     Install the in-VPC observability stack (Prometheus + Grafana + Postgres +
     OTel collector) on this cell, for customers whose telemetry must not leave
-    the VPC (grafana_mode = self_hosted). Opt-in per cell, DEFAULTS OFF — a
-    cloud-observability cell must not run an unused monitoring stack.
+    the VPC (grafana_mode = self_hosted, the BYOC instance default). Opt-in per
+    cell, DEFAULTS OFF — a cell that keeps every instance on Grafana Cloud must
+    not run an unused monitoring stack. Cells that accept the instance default
+    must set this true.
   EOT
   type        = bool
   default     = false

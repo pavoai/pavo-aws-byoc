@@ -991,9 +991,10 @@ possible one.
 
 ## In-VPC observability (self-hosted Grafana / Prometheus / OTel)
 
-For customers whose telemetry must not leave the VPC (`grafana_mode = self_hosted`).
-Opt-in per cell — a cloud-observability cell must not run an unused
-monitoring stack. Everything installs from this module's single `terraform apply`
+For customers whose telemetry must not leave the VPC (`grafana_mode = self_hosted`,
+the BYOC instance default). Opt-in per cell — a cell that keeps every instance
+on Grafana Cloud (`grafana_mode = cloud`) must not run an unused monitoring
+stack. Everything installs from this module's single `terraform apply`
 into the `pavo-observability` namespace: Prometheus (in-VPC TSDB), Grafana
 (internal `pavo-nginx` ingress, dashboards-as-code), Postgres (Grafana backend),
 and the `pavo-otel-collector`. All PVCs bind the customer's one CMK. **Zero
@@ -1007,15 +1008,19 @@ both unset — the default — nothing leaves the cluster.
 
 | Variable | Who sets it | Effect |
 |---|---|---|
-| `enable_observability` | **Pavo operator**, per cell, at bootstrap | Installs the whole stack. Default `false`. Set `true` on any cell that will host a `grafana_mode=self_hosted` instance. |
+| `enable_observability` | **Pavo operator**, per cell, at bootstrap | Installs the whole stack. Default `false`. Set `true` on any cell that will host a `grafana_mode=self_hosted` instance (the BYOC instance default). |
 | `observability_grafana_host` | Pavo operator | Public hostname Grafana serves at; ingress host becomes `grafana.<this>`. Required when `enable_observability = true`. |
 | `cell_kms_key_arn` | **Customer** (the one CMK) | Encrypts the observability PVCs (`gp3-cmk`). Same key the instance module uses for RDS/ES/Zitadel — one key for everything. |
 | `pavo_app_alerts_enabled` | Pavo operator | Also routes Prometheus alerts to Pavo via the in-VPC sanitizer (8-key metadata only). Default `false` = customer-webhook leg only. Requires a real signed `sanitizer_image` — the sanitizer stays off until that image is built (the cell ClusterImagePolicy admits only signed digests). |
 | `customer_alert_webhook_url` | Customer (optional) | Alertmanager posts raw alerts here (via a Secret, never a break-glass-readable ConfigMap). Empty = no customer leg. |
 
-The matching per-instance flag is `grafana_mode` (`cloud` default | `self_hosted`),
-set on the Omnistrate instance. It only routes telemetry in-VPC when this cell was
-bootstrapped with `enable_observability = true`.
+The matching per-instance flag is `grafana_mode` (`self_hosted` default | `cloud`),
+set on the Omnistrate instance. New BYOC instances take `self_hosted` unless
+someone sets `cloud` explicitly, so a cell that will host those instances must
+set `enable_observability = true` or Phase 4's convergence barrier refuses
+READY. Multi-tenant stays on `cloud` unless an operator sets `self_hosted`.
+Telemetry only reaches the in-VPC stack when this cell was bootstrapped with
+`enable_observability = true`.
 
 ### How metrics flow
 

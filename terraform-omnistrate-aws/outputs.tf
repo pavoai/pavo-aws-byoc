@@ -217,10 +217,10 @@ output "elasticsearch_app_user_secret_name" {
   value       = var.es_mode == "self_hosted" ? "es-app-user" : ""
 }
 
-# Observability routing mode — apps read this to send metrics to Grafana Cloud
-# (cloud) or the in-VPC observability stack (self_hosted). No per-instance TF
-# resources: the in-VPC stack is cell-scoped, provisioned by pavo-bootstrap-aws
-# (var.enable_observability), so this just echoes the flag.
+# Observability routing mode — default self_hosted. Apps read this to send
+# metrics to the in-VPC stack, or to Grafana Cloud when set to cloud. No
+# per-instance TF resources: the in-VPC stack is cell-scoped, provisioned by
+# pavo-bootstrap-aws (var.enable_observability), so this just echoes the flag.
 output "grafana_mode" {
   description = "cloud | self_hosted — apps switch their telemetry routing on this."
   value       = var.grafana_mode

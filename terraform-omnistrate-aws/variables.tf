@@ -222,17 +222,16 @@ variable "grafana_mode" {
     Observability routing for this instance — the "cloud vs self-hosted" knob for
     metrics/Grafana ONLY. Separate from es_mode so observability can be flipped
     independently.
-      - "cloud"       : apps egress telemetry to Grafana Cloud — the default,
-                        unchanged behavior.
       - "self_hosted" : apps route metrics to the in-VPC observability stack (no
-                        telemetry egress). Requires the cell to have been
-                        bootstrapped with enable_observability = true
+                        telemetry egress). This is the default. Requires the cell
+                        to have been bootstrapped with enable_observability = true
                         (pavo-bootstrap-aws) so a receiver exists.
+      - "cloud"       : apps egress telemetry to Grafana Cloud.
     Echoed as an output (self_hosted has no per-instance TF resources here — the
     stack is cell-scoped and owned by pavo-bootstrap-aws). AWS BYOC only.
   EOT
   type        = string
-  default     = "cloud"
+  default     = "self_hosted"
 
   validation {
     condition     = contains(["cloud", "self_hosted"], var.grafana_mode)
@@ -604,12 +603,6 @@ variable "pavo_computer_backend" {
 
 variable "worker_proxy_routing_enabled" {
   description = "Route sandbox worker egress through capability-proxy."
-  type        = bool
-  default     = false
-}
-
-variable "enable_lambda_microvms" {
-  description = "DEPRECATED — no longer read by any resource; setting it changes nothing. The Lambda MicroVM IAM grants are now rendered unconditionally (see the MicroVM statements in main.tf) because gating them on this per-instance parameter took the grants offline for 28-79 minutes on every deploy. Retained as a declared variable ONLY so the spec's tfvars pass-through and the parameter values already stored on live Omnistrate instances stay valid; removing it here, in spec/spec-byoc.yaml and in the apiParameter declarations is a follow-up change, not part of the incident fix. The account-level control is now the permission boundary (pavo-bootstrap-aws/policy-statements.json)."
   type        = bool
   default     = false
 }

@@ -54,10 +54,12 @@ Per instance:
   `network_posture = "strict"`, default-deny egress NetworkPolicies.
 - **Kubernetes:** the instance namespace, ExternalSecrets that sync the
   database password, and configuration Secrets and ConfigMaps.
-- **Optional components** (by `es_mode`, `temporal_mode`, `zitadel_mode`):
-  Elasticsearch either on Elastic Cloud or in-cluster (ECK); Temporal either on
-  Temporal Cloud or in-cluster; Zitadel either Pavo's hosted service or
-  in-cluster.
+- **Optional components** (by `es_mode`, `temporal_mode`, `zitadel_mode`,
+  `grafana_mode`): Elasticsearch either on Elastic Cloud or in-cluster (ECK);
+  Temporal either on Temporal Cloud or in-cluster; Zitadel either Pavo's
+  hosted service or in-cluster. Telemetry stays in-VPC by default
+  (`grafana_mode = self_hosted`, which needs `enable_observability` on the
+  cell); `cloud` sends metrics to Grafana Cloud.
 
 See [inputs-contract.md](inputs-contract.md) for every input and its source.
 
@@ -75,6 +77,7 @@ Terraform that creates those objects is not published here.
 |---|---|---|
 | `network_posture` | `standard`, `strict` | Strict adds default-deny egress NetworkPolicies, an internal load balancer, private-CA certificates and provider installs from the in-account mirror |
 | `es_mode` | `cloud`, `self_hosted` | Elastic Cloud deployment, or an in-cluster ECK cluster with S3 snapshots |
+| `grafana_mode` | `self_hosted` (default), `cloud` | In-VPC Prometheus/Grafana, or telemetry egress to Grafana Cloud |
 | `temporal_mode` | `cloud`, `self_hosted` | Temporal Cloud, or an in-cluster Temporal with its own RDS |
 | `zitadel_mode` | `cloud`, `self_hosted` | Pavo's hosted identity, or an in-cluster Zitadel configured by the stage 3 Job |
 

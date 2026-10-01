@@ -41,6 +41,9 @@ S3 backend; stage 2 state is managed by Omnistrate.
 Depending on modes and flags (see [network-and-egress.md](network-and-egress.md)):
 
 - **Search data** goes to Elastic Cloud with `es_mode = "cloud"`.
+- **Metrics and dashboards** stay in the VPC with the default
+  `grafana_mode = "self_hosted"`. They go to Grafana Cloud only when
+  `grafana_mode` is set to `cloud`.
 - **Workflow payloads** go to Temporal Cloud with `temporal_mode = "cloud"`,
   encrypted with the payload codec key when one is set.
 - **User identity** is held in Pavo's identity service with
