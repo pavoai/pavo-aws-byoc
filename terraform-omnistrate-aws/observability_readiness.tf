@@ -37,7 +37,7 @@
 locals {
   # Gated on the INSTANCE's routing flag. An instance on grafana_mode = "cloud"
   # egresses telemetry to Grafana Cloud and has no in-VPC stack to assert on.
-  obs_gate_count = var.grafana_mode == "self_hosted" ? 1 : 0
+  obs_gate_count = local.effective_grafana_mode == "self_hosted" ? 1 : 0
 
   # local.observability_ready_name / _present live in cell_gates.tf with the
   # other cell -> instance gates.
@@ -51,7 +51,7 @@ locals {
   obs_namespace = "pavo-observability"
 
   # Same pinned multi-arch image the Zitadel readiness Job uses (curl + jq).
-  obs_readiness_image = "docker.io/alpine/k8s@sha256:66dd3f7db6c4cf152b688d83aad11ceed9eb2da0c4e7de1034c7d4ccea1b55ef"
+  obs_readiness_image = local.image.alpine_k8s
 }
 
 # One-time semantics live here, NOT in the Job's name alone. `triggers_replace`

@@ -13,19 +13,8 @@ locals {
   # them, and including them blew the boundary past the 6144 IAM policy-size cap.
   # scope="runner" → runner policy only (spec CUSTOM_TERRAFORM_POLICY); the
   # runner role is not bounded by this boundary. Absent scope = shared (both).
-  #
-  # A scope="boundary" statement may also carry "switch": "<variable>". It is
-  # then in the boundary only while that variable is true. Every switch name
-  # must be a key below (fail-closed, see the precondition on the policy), and
-  # scripts/render-policy.sh --disable <switch> renders the same filter. Absent
-  # switch = always included.
-  boundary_switches = {
-    allow_lambda_microvms = var.allow_lambda_microvms
-  }
-
   boundary_statements = [
-    for s in local.policy_statements : s
-    if lookup(s, "scope", "shared") != "runner" && lookup(local.boundary_switches, lookup(s, "switch", ""), true)
+    for s in local.policy_statements : s if lookup(s, "scope", "shared") != "runner"
   ]
 
   # The bootstrap operators (ESO, ECK, policy-controller, reloader) are cluster
@@ -94,41 +83,34 @@ resource "aws_iam_policy" "pavo_permission_boundary" {
       ])
       error_message = "policy-statements.json: every statement's \"scope\" must be one of shared|runner|boundary (absent = shared)."
     }
-
-    # Same for "switch": a misspelt name must not silently keep a statement in,
-    # and a switch on a shared statement would still reach the runner policy
-    # unconditionally (sync-policy-to-spec.py has no switches), so only
-    # scope="boundary" statements may carry one. Mirrored in render-policy.sh.
-    precondition {
-      condition = alltrue([
-        for s in local.policy_statements :
-        contains(concat([""], keys(local.boundary_switches)), lookup(s, "switch", ""))
-        && (lookup(s, "switch", "") == "" || lookup(s, "scope", "shared") == "boundary")
-      ])
-      error_message = "policy-statements.json: every \"switch\" must name a key of local.boundary_switches and sit on a scope=\"boundary\" statement."
-    }
   }
 }
 
 # ============================================================================
 # ESO IRSA role (assumed by the external-secrets ServiceAccount in EKS)
 # ============================================================================
+# Secret reads go through per-instance roles (pavo-eso-<instance_id>, owned by
+# terraform-omnistrate-aws) behind namespaced SecretStores. This role stays as
+# the ESO controller's ambient identity — the IRSA annotation is what injects
+# AWS_STS_REGIONAL_ENDPOINTS=regional, which the controller's STS calls need on
+# cells without a global-STS route — but grants nothing by default. The explicit
+# Deny overrides customer key policies that grant this role kms:Decrypt directly.
 data "aws_iam_policy_document" "pavo_eso_trust" {
   statement {
     effect  = "Allow"
     actions = ["sts:AssumeRoleWithWebIdentity"]
     principals {
       type        = "Federated"
-      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/${var.eks_oidc_provider}"]
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/${local.eks_oidc_provider}"]
     }
     condition {
       test     = "StringEquals"
-      variable = "${var.eks_oidc_provider}:aud"
+      variable = "${local.eks_oidc_provider}:aud"
       values   = ["sts.amazonaws.com"]
     }
     condition {
       test     = "StringEquals"
-      variable = "${var.eks_oidc_provider}:sub"
+      variable = "${local.eks_oidc_provider}:sub"
       values   = ["system:serviceaccount:external-secrets:external-secrets"]
     }
   }
@@ -138,7 +120,7 @@ resource "aws_iam_role" "pavo_eso" {
   # Cell-scoped: the trust policy is bound to one cluster's OIDC provider, and
   # ESO is installed once per cell (one external-secrets ServiceAccount per
   # cluster), so this role is inherently per-cell — keyed on eks_cluster_name.
-  name                 = "pavo-eso-${var.eks_cluster_name}"
+  name                 = "pavo-eso-${local.eks_cluster_name}"
   assume_role_policy   = data.aws_iam_policy_document.pavo_eso_trust.json
   permissions_boundary = aws_iam_policy.pavo_permission_boundary.arn
 
@@ -146,36 +128,83 @@ resource "aws_iam_role" "pavo_eso" {
 }
 
 data "aws_iam_policy_document" "pavo_eso_permissions" {
-  # Read the RDS-managed master user secret + any pavo-* secrets.
-  statement {
-    effect  = "Allow"
-    actions = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
-    resources = [
-      "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:rds!*",
-      "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:pavo-*",
-    ]
+  dynamic "statement" {
+    for_each = var.legacy_eso_cell_secret_read ? [] : [1]
+    content {
+      sid       = "DenySecretRead"
+      effect    = "Deny"
+      actions   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret", "kms:Decrypt"]
+      resources = ["*"]
+    }
   }
 
-  # Decrypt the customer's CMK when SecretsManager invokes it on our behalf.
-  # Without this, GetSecretValue on a CMK-encrypted RDS-managed secret returns
-  # AccessDeniedException at the KMS layer. kms:ViaService scopes the use to
-  # the SecretsManager service principal — ESO can't call kms:Decrypt directly.
-  statement {
-    effect    = "Allow"
-    actions   = ["kms:Decrypt", "kms:DescribeKey"]
-    resources = ["*"]
-    condition {
-      test     = "StringEquals"
-      variable = "kms:ViaService"
-      values   = ["secretsmanager.${data.aws_region.current.name}.amazonaws.com"]
+  # Legacy: account-wide read for instances still on a per-instance
+  # ClusterSecretStore that authenticates as this role.
+  dynamic "statement" {
+    for_each = var.legacy_eso_cell_secret_read ? [1] : []
+    content {
+      effect  = "Allow"
+      actions = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+      resources = [
+        "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:rds!*",
+      ]
+    }
+  }
+  dynamic "statement" {
+    for_each = var.legacy_eso_cell_secret_read ? [1] : []
+    content {
+      effect    = "Allow"
+      actions   = ["kms:Decrypt", "kms:DescribeKey"]
+      resources = ["*"]
+      condition {
+        test     = "StringEquals"
+        variable = "kms:ViaService"
+        values   = ["secretsmanager.${data.aws_region.current.name}.amazonaws.com"]
+      }
     }
   }
 }
 
+# Legacy ClusterSecretStores (pavo-aws-sm-<instance_id>) authenticate as this
+# role. Listed after the ESO release so a fresh cell reads them once the CRDs
+# exist. Pins external-secrets.io/v1beta1; remove this guard (and
+# legacy_eso_cell_secret_read) once every cell has migrated.
+data "kubernetes_resources" "legacy_eso_cluster_secret_stores" {
+  api_version = "external-secrets.io/v1beta1"
+  kind        = "ClusterSecretStore"
+
+  depends_on = [helm_release.external_secrets]
+}
+
+locals {
+  legacy_eso_cluster_secret_stores = [
+    for o in data.kubernetes_resources.legacy_eso_cluster_secret_stores.objects :
+    o.metadata.name if startswith(o.metadata.name, "pavo-aws-sm-")
+  ]
+}
+
+check "legacy_eso_cell_secret_read_stale" {
+  assert {
+    # Ternary, not ||. Terraform 1.9 does not short-circuit ||, so
+    # `true || <unknown list>` stays unknown and warns "known after apply"
+    # on a fresh cell: the flag is false, and the External Secrets CRDs do
+    # not exist until this apply. The false branch is a known true.
+    condition     = var.legacy_eso_cell_secret_read ? length(local.legacy_eso_cluster_secret_stores) > 0 : true
+    error_message = "legacy_eso_cell_secret_read is true but no pavo-aws-sm-* ClusterSecretStore remains: the flag is stale; remove it."
+  }
+}
+
 resource "aws_iam_role_policy" "pavo_eso" {
-  name   = "pavo-eso-policy-${var.eks_cluster_name}"
+  name   = "pavo-eso-policy-${local.eks_cluster_name}"
   role   = aws_iam_role.pavo_eso.id
   policy = data.aws_iam_policy_document.pavo_eso_permissions.json
+
+  lifecycle {
+    precondition {
+      condition     = var.legacy_eso_cell_secret_read || length(local.legacy_eso_cluster_secret_stores) == 0
+      error_message = "ClusterSecretStore(s) ${join(", ", local.legacy_eso_cluster_secret_stores)} still read secrets as the cell ESO role. Upgrade those instances first (they move to per-instance SecretStores), or set legacy_eso_cell_secret_read = true until they are upgraded."
+    }
+  }
 
   depends_on = [aws_ssm_parameter.single_cell_guard]
 }
@@ -191,39 +220,39 @@ resource "aws_iam_role_policy" "pavo_eso" {
 #   /pavo/shared/*                   — account-scoped (the permission boundaries)
 # ============================================================================
 resource "aws_ssm_parameter" "vpc_id" {
-  name  = "/pavo/cells/${var.eks_cluster_name}/vpc_id"
+  name  = "/pavo/cells/${local.eks_cluster_name}/vpc_id"
   type  = "String"
-  value = var.vpc_id
+  value = local.vpc_id
 
   depends_on = [aws_ssm_parameter.single_cell_guard]
 }
 
 resource "aws_ssm_parameter" "private_subnet_ids" {
-  name  = "/pavo/cells/${var.eks_cluster_name}/private_subnet_ids"
+  name  = "/pavo/cells/${local.eks_cluster_name}/private_subnet_ids"
   type  = "StringList"
-  value = join(",", var.private_subnet_ids)
+  value = join(",", local.private_subnet_ids)
 
   depends_on = [aws_ssm_parameter.single_cell_guard]
 }
 
 resource "aws_ssm_parameter" "eks_cluster_name" {
-  name  = "/pavo/cells/${var.eks_cluster_name}/eks_cluster_name"
+  name  = "/pavo/cells/${local.eks_cluster_name}/eks_cluster_name"
   type  = "String"
-  value = var.eks_cluster_name
+  value = local.eks_cluster_name
 
   depends_on = [aws_ssm_parameter.single_cell_guard]
 }
 
 resource "aws_ssm_parameter" "eks_oidc_provider" {
-  name  = "/pavo/cells/${var.eks_cluster_name}/eks_oidc_provider"
+  name  = "/pavo/cells/${local.eks_cluster_name}/eks_oidc_provider"
   type  = "String"
-  value = var.eks_oidc_provider
+  value = local.eks_oidc_provider
 
   depends_on = [aws_ssm_parameter.single_cell_guard]
 }
 
 resource "aws_ssm_parameter" "eso_role_arn" {
-  name  = "/pavo/cells/${var.eks_cluster_name}/eso_role_arn"
+  name  = "/pavo/cells/${local.eks_cluster_name}/eso_role_arn"
   type  = "String"
   value = aws_iam_role.pavo_eso.arn
 
@@ -264,7 +293,7 @@ resource "aws_ssm_parameter" "permission_boundary_arn" {
 resource "aws_ssm_parameter" "single_cell_guard" {
   name        = "/pavo/shared/bootstrap_cell"
   type        = "String"
-  value       = var.eks_cluster_name
+  value       = local.eks_cluster_name
   description = "Single-cell-per-account sentinel. See pavo-bootstrap-aws/main.tf and README → Ownership rules."
 
   lifecycle {
@@ -284,7 +313,7 @@ resource "aws_ssm_parameter" "single_cell_guard" {
 # not the runner's).
 
 resource "aws_eks_access_entry" "runner" {
-  cluster_name  = var.eks_cluster_name
+  cluster_name  = local.eks_cluster_name
   principal_arn = var.runner_role_arn
   type          = "STANDARD"
 
@@ -338,7 +367,7 @@ resource "helm_release" "external_secrets" {
   create_namespace = true
   repository       = "https://charts.external-secrets.io"
   chart            = "external-secrets"
-  version          = "0.10.4"
+  version          = var.external_secrets_chart_version
 
   set {
     name  = "installCRDs"
@@ -351,10 +380,28 @@ resource "helm_release" "external_secrets" {
 
   # Tolerate CriticalAddonsOnly on all three ESO deployments (controller,
   # webhook, cert-controller) — see local.critical_addon_toleration.
+  # Image pins come from mirrored-images.json so a no-NAT cell does not pull
+  # oci.external-secrets.io.
   values = [yamlencode({
-    tolerations    = local.critical_addon_toleration
-    webhook        = { tolerations = local.critical_addon_toleration }
-    certController = { tolerations = local.critical_addon_toleration }
+    image = {
+      repository = local.mirrored.external_secrets.repository
+      tag        = local.mirrored.external_secrets.tag_at_digest
+    }
+    tolerations = local.critical_addon_toleration
+    webhook = {
+      image = {
+        repository = local.mirrored.external_secrets.repository
+        tag        = local.mirrored.external_secrets.tag_at_digest
+      }
+      tolerations = local.critical_addon_toleration
+    }
+    certController = {
+      image = {
+        repository = local.mirrored.external_secrets.repository
+        tag        = local.mirrored.external_secrets.tag_at_digest
+      }
+      tolerations = local.critical_addon_toleration
+    }
   })]
 
   depends_on = [
@@ -371,7 +418,7 @@ resource "helm_release" "external_secrets" {
 # — unnecessary on cells with only Elastic-Cloud instances, where an idle
 # operator + CRDs + validating webhook would add avoidable surface.
 #
-# Deliberately NOT here (validated live on an internal test cell):
+# Deliberately NOT here (validated live on an Omnistrate cell):
 #   - vm.max_map_count sysctl (ES >= 8.16 prereq): the Omnistrate node AMI is
 #     Bottlerocket, which already ships vm.max_map_count=1048576. No DaemonSet.
 #   - S3 gateway VPC endpoint for snapshots: Omnistrate already provisions one
@@ -390,7 +437,13 @@ resource "helm_release" "eck_operator" {
 
   # Tolerate CriticalAddonsOnly so the operator can run on the system pool of a
   # fresh cell (no tenant workload nodes yet) — see local.critical_addon_toleration.
+  # Image pin from mirrored-images.json (no-NAT cells cannot pull docker.elastic.co).
   values = [yamlencode({
+    image = {
+      repository = local.mirrored.eck_operator.repository
+      tag        = local.mirrored.eck_operator.tag
+      digest     = local.mirrored.eck_operator.digest
+    }
     tolerations = local.critical_addon_toleration
   })]
 
@@ -409,7 +462,7 @@ resource "helm_release" "eck_operator" {
 resource "aws_ssm_parameter" "eck_ready" {
   count = var.enable_eck ? 1 : 0
 
-  name  = "/pavo/cells/${var.eks_cluster_name}/eck_ready"
+  name  = "/pavo/cells/${local.eks_cluster_name}/eck_ready"
   type  = "String"
   value = "true"
 
@@ -424,7 +477,7 @@ resource "aws_ssm_parameter" "eck_ready" {
 resource "aws_ssm_parameter" "network_policy_ready" {
   count = var.network_policy_ready ? 1 : 0
 
-  name  = "/pavo/cells/${var.eks_cluster_name}/network_policy_ready"
+  name  = "/pavo/cells/${local.eks_cluster_name}/network_policy_ready"
   type  = "String"
   value = "true"
 
@@ -461,7 +514,7 @@ resource "aws_ssm_parameter" "network_policy_ready" {
 resource "aws_ssm_parameter" "observability_ready" {
   count = var.enable_observability ? 1 : 0
 
-  name  = "/pavo/cells/${var.eks_cluster_name}/observability_ready"
+  name  = "/pavo/cells/${local.eks_cluster_name}/observability_ready"
   type  = "String"
   value = "true"
 
@@ -487,7 +540,7 @@ resource "helm_release" "stakater_reloader" {
   create_namespace = true
   repository       = "https://stakater.github.io/stakater-charts"
   chart            = "reloader"
-  version          = "1.1.0"
+  version          = var.reloader_chart_version
 
   set {
     name  = "reloader.watchGlobally"
@@ -496,8 +549,17 @@ resource "helm_release" "stakater_reloader" {
 
   # Tolerate CriticalAddonsOnly so reloader runs on the system pool of a fresh
   # cell — see local.critical_addon_toleration.
+  # Image pin from mirrored-images.json (no-NAT cells cannot pull ghcr.io).
   values = [yamlencode({
-    reloader = { deployment = { tolerations = local.critical_addon_toleration } }
+    reloader = {
+      deployment = {
+        image = {
+          name = local.mirrored.reloader.repository
+          tag  = local.mirrored.reloader.tag_at_digest
+        }
+        tolerations = local.critical_addon_toleration
+      }
+    }
   })]
 
   depends_on = [
@@ -526,22 +588,8 @@ resource "helm_release" "stakater_reloader" {
 # pd-balanced StorageClass (cell-scoped, cluster-wide)
 # ============================================================================
 # Alias for EBS gp3 — name matches the GCP convention used by connector PVCs.
-#
-# pd_balanced_use_cell_key = true encrypts new volumes with the cell key, set
-# exactly as the gp3-cmk StorageClass does (observability.tf). StorageClass
-# parameters are immutable (ForceNew), so flipping the flag on an existing cell
-# replaces this class; volumes already provisioned keep their encryption.
 
 resource "kubernetes_storage_class_v1" "ebs_gp3" {
-  # Fail fast without the key: an empty kmsKeyId would silently fall back to
-  # provisioner-default encryption.
-  lifecycle {
-    precondition {
-      condition     = !var.pd_balanced_use_cell_key || var.cell_kms_key_arn != ""
-      error_message = "cell_kms_key_arn must be set when pd_balanced_use_cell_key = true."
-    }
-  }
-
   metadata {
     name = "pd-balanced"
     annotations = {
@@ -554,13 +602,9 @@ resource "kubernetes_storage_class_v1" "ebs_gp3" {
   volume_binding_mode    = "WaitForFirstConsumer"
   allow_volume_expansion = true
 
-  parameters = merge(
-    { type = "gp3" },
-    var.pd_balanced_use_cell_key ? {
-      encrypted = "true"
-      kmsKeyId  = var.cell_kms_key_arn
-    } : {},
-  )
+  parameters = {
+    type = "gp3"
+  }
 
   depends_on = [
     aws_ssm_parameter.single_cell_guard,
@@ -682,8 +726,23 @@ resource "helm_release" "policy_controller" {
       # CriticalAddonsOnly so they run on the system pool of a fresh cell (see
       # local.critical_addon_toleration).
       commonTolerations = local.critical_addon_toleration
+      # Image pins from mirrored-images.json. disable-tuf: no-NAT cells cannot
+      # refresh the public Sigstore TUF root.
+      leasescleanup = {
+        image = {
+          repository = local.mirrored.leases_cleanup.repository
+          version    = local.mirrored.leases_cleanup.tag_at_digest
+        }
+      }
       webhook = {
         replicaCount = 2
+        extraArgs = {
+          disable-tuf = true
+        }
+        image = {
+          repository = local.mirrored.policy_controller.repository
+          version    = local.mirrored.policy_controller.digest
+        }
         configData = {
           "no-match-policy" = "allow"
         }

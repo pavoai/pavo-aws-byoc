@@ -5,8 +5,9 @@
 | Principal | Created by | What it can do | Where to read it |
 |---|---|---|---|
 | Omnistrate runner role | Omnistrate, when you connect the account | Applies stage 2. Stage 1 gives it cluster-admin on this EKS cluster only (`AmazonEKSClusterAdminPolicy`, cluster scope) | `pavo-bootstrap-aws/main.tf` (`aws_eks_access_entry.runner`) |
-| External Secrets role | Stage 1 | Reads the secrets ESO syncs, and decrypts with the cell key | `pavo-bootstrap-aws/main.tf` (`pavo_eso_permissions`) |
-| Workload role (IRSA) | Stage 2 | What the application pods need: Bedrock, RDS IAM auth, the instance's S3 buckets, SES, SNS and SQS | `terraform-omnistrate-aws/main.tf` (`pavo_permissions`) |
+| External Secrets role (cell) | Stage 1 | Installs the ESO controller. **Denies** Secrets Manager / KMS reads unless `legacy_eso_cell_secret_read = true` | `pavo-bootstrap-aws/main.tf` |
+| External Secrets role (instance) | Stage 2 | Reads only this instance's RDS master secret(s) and decrypts via Secrets Manager on the cell key. Namespaced SecretStore `pavo-aws-sm` | `terraform-omnistrate-aws/main.tf` (`aws_iam_role.eso`) |
+| Workload role (IRSA) | Stage 2 | What the application pods need: Bedrock, the instance's S3 buckets, SES, SNS and SQS. No `rds-db:connect` and no `elasticache:Connect` | `terraform-omnistrate-aws/main.tf` (`pavo_permissions`) |
 | KEDA role | Stage 2 | Reads SQS queue attributes to scale workers | `terraform-omnistrate-aws/main.tf` (`keda_sqs`) |
 | Elasticsearch snapshot role | Stage 2, `es_mode = "self_hosted"` | Reads and writes the snapshot bucket, with the cell key | `terraform-omnistrate-aws/elasticsearch_snapshots.tf` |
 | Identity provisioner role | Stage 2, `zitadel_mode = "self_hosted"` | Reads and writes its state bucket, with the cell key | `terraform-omnistrate-aws/zitadel_provision.tf` |
@@ -20,16 +21,14 @@ its permissions boundary, so a role's effective permissions are the
 intersection of its own policy and the boundary. A mistake in a stage 2
 policy can't grant more than the boundary allows.
 
-Statements marked `"switch": "<variable>"` are in the boundary only while that stage 1 variable is true. The only one is `allow_lambda_microvms` (default `true`), which controls the two Lambda MicroVM statements. Set it to `false` to keep MicroVM actions out of your account's boundary: the policy stage 1 applies is then `rendered-permission-boundary.json` without those two statements (`local.boundary_statements` in `pavo-bootstrap-aws/main.tf`).
-
 `pavo-bootstrap-aws/RUNBOOKS.md` ("Permission boundary scoping &
 verification") explains each statement and how to check an edit.
 
 ## Kubernetes RBAC
 
 - The runner gets cluster-admin through the EKS access entry, because stage 2
-  creates namespaced objects and some cluster-scoped ones (storage classes,
-  the External Secrets cluster store).
+  creates namespaced objects and some cluster-scoped ones (storage classes).
+  SecretStores are namespaced (`pavo-aws-sm`), not cluster-wide.
 - With self-hosted identity, the provisioner Job runs under its own service
   account with a Role and RoleBinding limited to the instance namespace
   (`terraform-omnistrate-aws/zitadel_provision.tf`).
@@ -44,7 +43,9 @@ issued by `https://accounts.google.com`. During a transition period the shared
 build identity `cloud-build@<central_ci_project_id>.iam.gserviceaccount.com` is
 also accepted (see the comments in `pavo-bootstrap-aws/main.tf`).
 `image_policy_mode` defaults to `enforce`, which rejects unsigned or wrongly
-signed images.
+signed images. `no-match-policy = allow` admits non-Pavo images (ESO, ECK,
+Reloader, Prometheus, …). Those are digest-pinned and copied into artifact-plane
+ECR; they are not given extra ClusterImagePolicies in this snapshot.
 
 To verify an image yourself:
 

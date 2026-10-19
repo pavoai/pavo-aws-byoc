@@ -1,5 +1,5 @@
 output "eso_role_arn" {
-  description = "ARN of the ESO IRSA role. Use this when attaching the customer CMK key policy (statement 5: AllowESORoleDecryptViaSecretsManager)."
+  description = "ARN of the ESO controller's cell IRSA role. Grants no secret read (see legacy_eso_cell_secret_read); per-instance pavo-eso-<instance_id> roles read each instance's secrets."
   value       = aws_iam_role.pavo_eso.arn
 }
 
@@ -15,5 +15,25 @@ output "ssm_shared_prefix" {
 
 output "ssm_cell_prefix" {
   description = "SSM Parameter Store prefix for cell-scoped bootstrap state (VPC/subnets/OIDC, ESO role ARN)."
-  value       = "/pavo/cells/${var.eks_cluster_name}"
+  value       = "/pavo/cells/${local.eks_cluster_name}"
+}
+
+output "route53_vpc_endpoint_id" {
+  description = "Cell Route53 interface VPCE id, or null unless network_posture is strict."
+  value       = one(aws_vpc_endpoint.route53[*].id)
+}
+
+output "microvm_publisher_boundary_arn" {
+  description = "Publisher permission boundary ARN, or null before managed builds have ever been enabled."
+  value       = try(aws_iam_policy.microvm_publisher_boundary[0].arn, null)
+}
+
+output "microvm_build_boundary_arn" {
+  description = "Lambda build-role permission boundary ARN, or null before managed builds have ever been enabled."
+  value       = try(aws_iam_policy.microvm_build_boundary[0].arn, null)
+}
+
+output "vpc_interface_endpoint_ids" {
+  description = "Cell-scoped Interface VPC endpoint IDs (kms / secretsmanager / iam / rds / elasticache / sns / sqs / elasticfilesystem / email), keyed by service. Empty when every service already has a foreign private-DNS endpoint."
+  value       = { for svc, ep in aws_vpc_endpoint.interface : svc => ep.id }
 }

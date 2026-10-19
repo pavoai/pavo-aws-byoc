@@ -7,8 +7,10 @@
    image admission.
 3. [network-and-egress.md](network-and-egress.md): what your VPC talks to.
 4. [data-handled.md](data-handled.md): encryption and secrets.
-5. [inputs-contract.md](inputs-contract.md): every input and its source.
-6. The code, starting from each module's `main.tf`, `variables.tf` and
+5. [security-review-response.md](security-review-response.md): the review
+   reply mapped to this snapshot.
+6. [inputs-contract.md](inputs-contract.md): every input and its source.
+7. The code, starting from each module's `main.tf`, `variables.tf` and
    `README.md`.
 
 ## Checklist

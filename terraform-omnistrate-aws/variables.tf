@@ -116,8 +116,34 @@ variable "rds_deletion_protection" {
   default     = true
 }
 
+variable "redis_security_phase" {
+  description = "ElastiCache TLS + AUTH rollout. Existing instances step one modify at a time: off -> tls_preferred (pods move to rediss://) -> tls_required (token optional, pods send it) -> enforced (token required). New instances: create with enforced. No rollback below tls_required once enforced."
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "tls_preferred", "tls_required", "enforced"], var.redis_security_phase)
+    error_message = "redis_security_phase must be one of off, tls_preferred, tls_required, enforced."
+  }
+}
+
+# Same pattern as db_instance_class: TF default only, not a spec apiParameter.
+# Changing this on a live cell modifies the three single-node groups immediately
+# (apply_immediately = true, no failover) — keep the default unless a resize is intended.
+variable "redis_node_type" {
+  description = "ElastiCache node type for gateway, intern, and onboarding Redis."
+  type        = string
+  default     = "cache.t3.medium"
+}
+
+variable "efs_iam_auth_enforced" {
+  description = "EFS mounts must be IAM-signed by the CSI node role (StorageClass gets the `iam` mount option). Create new instances with true. Existing instances stay false: their bound PVs mount anonymously and would be denied on next remount."
+  type        = bool
+  default     = false
+}
+
 variable "cell_kms_key_arn" {
-  description = "The cell's single customer-managed KMS key ARN (or alias ARN) — encrypts the following at rest under the customer's own key: RDS storage + master-password secret, application S3 (onboarding + intern_data), EFS (filesystems created on strict-posture instances; an existing filesystem keeps its key), self-hosted Elasticsearch EBS + snapshots, and Zitadel resources (and, in pavo-bootstrap-aws, the in-VPC observability volumes). One key for the whole deployment: least customer effort, uniform key custody. Renamed from db_kms_key_arn (it never only covered the DB). Required. Both 'arn:aws:kms:...:key/UUID' and 'arn:aws:kms:...:alias/name' formats are accepted. NOTE: this supports only the commercial AWS partition (arn:aws:...). GovCloud and China partitions require partition-aware policy resources (policy-statements.json hardcodes 'arn:aws:' in many resource ARNs); deferred to a follow-up."
+  description = "The cell's single customer-managed KMS key ARN (or alias ARN) — encrypts everything this instance stores at rest under the customer's own key: RDS storage + master-password secret, ElastiCache Redis, SNS topics, EFS, self-hosted Elasticsearch EBS + snapshots, and Zitadel resources (and, in pavo-bootstrap-aws, the in-VPC observability volumes). One key for the whole deployment: least customer effort, uniform key custody. Renamed from db_kms_key_arn (it never only covered the DB). Required. Both 'arn:aws:kms:...:key/UUID' and 'arn:aws:kms:...:alias/name' formats are accepted. NOTE: this supports only the commercial AWS partition (arn:aws:...). GovCloud and China partitions require partition-aware policy resources (policy-statements.json hardcodes 'arn:aws:' in many resource ARNs); deferred to a follow-up."
   type        = string
 
   validation {
@@ -190,7 +216,13 @@ variable "network_posture" {
                      strict instance fails fast unless the cell has the private CA
                      installed (/pavo/cells/<cluster>/private_ca_ready) AND CNI
                      NetworkPolicy support (/pavo/cells/<cluster>/network_policy_ready).
-    Not yet verified on a test instance: suppression of the public DNS record. strict sets an empty
+                     Also requires es_mode / grafana_mode / temporal_mode /
+                     zitadel_mode = self_hosted at CREATE (terraform_data.strict_hosting_guard).
+                     Helm layers (spec-byoc.yaml) force Bedrock-only LLM, mantle off,
+                     pavo_custom computer, and empty SaaS keys. email_enabled / IdP /
+                     GitHub-Bitbucket stay independently assigned.
+    NOT claimed by strict, and must not be told to a customer until proven on
+    a test cell: suppression of the public DNS record. strict sets an empty
     external-dns hostname annotation, but that is a no-op if external-dns runs
     with --source=ingress rather than --source=service, and
     endpointConfiguration.networkingType stays PUBLIC (an Omnistrate-owned
@@ -207,6 +239,13 @@ variable "network_posture" {
   }
 }
 
+locals {
+  # TF-managed ingresses (Zitadel, Kibana, Temporal UI). A strict cell's LB is
+  # internal, so public ACME can't validate; same switch the spec applies to
+  # the helm ingresses.
+  ingress_cluster_issuer = var.network_posture == "strict" ? "pavo-private-ca" : "pavo-letsencrypt-prod"
+}
+
 # -----------------------------------------------------------------------------
 # Observability (Grafana/metrics) mode — DEDICATED flag, decoupled from es_mode.
 # Controls only where apps SEND telemetry (Grafana Cloud vs in-VPC). The in-VPC
@@ -221,16 +260,17 @@ variable "grafana_mode" {
     Observability routing for this instance — the "cloud vs self-hosted" knob for
     metrics/Grafana ONLY. Separate from es_mode so observability can be flipped
     independently.
+      - "cloud"       : apps egress telemetry to Grafana Cloud — the default,
+                        unchanged behavior.
       - "self_hosted" : apps route metrics to the in-VPC observability stack (no
-                        telemetry egress). This is the default. Requires the cell
-                        to have been bootstrapped with enable_observability = true
+                        telemetry egress). Requires the cell to have been
+                        bootstrapped with enable_observability = true
                         (pavo-bootstrap-aws) so a receiver exists.
-      - "cloud"       : apps egress telemetry to Grafana Cloud.
     Echoed as an output (self_hosted has no per-instance TF resources here — the
     stack is cell-scoped and owned by pavo-bootstrap-aws). AWS BYOC only.
   EOT
   type        = string
-  default     = "self_hosted"
+  default     = "cloud"
 
   validation {
     condition     = contains(["cloud", "self_hosted"], var.grafana_mode)
@@ -602,6 +642,12 @@ variable "pavo_computer_backend" {
 
 variable "worker_proxy_routing_enabled" {
   description = "Route sandbox worker egress through capability-proxy."
+  type        = bool
+  default     = false
+}
+
+variable "enable_lambda_microvms" {
+  description = "DEPRECATED — no longer read by any resource; setting it changes nothing. The Lambda MicroVM IAM grants are now rendered unconditionally (see the MicroVM statements in main.tf) because gating them on this per-instance parameter took the grants offline for 28-79 minutes on every deploy. Retained as a declared variable ONLY so the spec's tfvars pass-through and the parameter values already stored on live Omnistrate instances stay valid; removing it here, in spec/spec-byoc.yaml and in the apiParameter declarations is a follow-up change, not part of the incident fix. The account-level control is now the permission boundary (pavo-bootstrap-aws/policy-statements.json)."
   type        = bool
   default     = false
 }

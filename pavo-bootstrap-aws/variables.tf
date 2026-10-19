@@ -1,33 +1,36 @@
-variable "vpc_id" {
-  description = "VPC ID where the EKS cluster runs (Omnistrate-provisioned)."
+# Optional cell inputs: null = read from the provider's account (see cell.tf).
+variable "eks_cluster_name" {
+  description = "EKS cluster name; null = the one hc-* cluster in the provider's account/region."
   type        = string
+  default     = null
+}
+
+variable "vpc_id" {
+  description = "VPC ID of the EKS cluster; null = read from the cluster."
+  type        = string
+  default     = null
 }
 
 variable "private_subnet_ids" {
-  description = "Private subnet IDs (Omnistrate-tagged kubernetes.io/role/internal-elb=1)."
+  description = "Private subnet IDs; null = the cluster VPC's subnets tagged kubernetes.io/role/internal-elb=1."
   type        = list(string)
-}
-
-variable "eks_cluster_name" {
-  description = "EKS cluster name (Omnistrate-provisioned)."
-  type        = string
+  default     = null
 }
 
 variable "eks_oidc_provider" {
-  description = "EKS OIDC issuer URL without https:// prefix (e.g., oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B71EXAMPLE)."
+  description = "EKS OIDC issuer without https:// (e.g. oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE); null = read from the cluster."
   type        = string
+  default     = null
 
   validation {
-    # The IRSA/OIDC wiring downstream concatenates this with `arn:aws:iam::<acct>:oidc-provider/`,
-    # so a `https://` prefix on input produces a malformed ARN and fails only at apply time.
-    # Catch it at the module boundary.
-    condition     = length(var.eks_oidc_provider) > 0 && !startswith(var.eks_oidc_provider, "https://") && !startswith(var.eks_oidc_provider, "http://")
+    # Concatenated into arn:aws:iam::<acct>:oidc-provider/<this>; a scheme prefix only fails at apply.
+    condition     = !can(regex("^https?://", var.eks_oidc_provider))
     error_message = "eks_oidc_provider must be the issuer host/path without the https:// or http:// prefix."
   }
 }
 
 variable "runner_role_arn" {
-  description = "IAM role ARN of the Omnistrate Terraform runner principal that needs cluster-admin RBAC on this EKS cluster. MUST be the underlying role ARN (arn:aws:iam::<acct>:role/<RoleName>), NOT an assumed-role session ARN. See README → 'How to get runner_role_arn' for how to obtain it."
+  description = "IAM role ARN of the Omnistrate Terraform runner principal that needs cluster-admin RBAC on this EKS cluster. MUST be the underlying role ARN (arn:aws:iam::<acct>:role/<RoleName>), NOT an assumed-role session ARN. See README → 'Onboarding a new AWS BYOC cell' for how to obtain it."
   type        = string
 
   validation {
@@ -100,6 +103,28 @@ variable "policy_controller_chart_version" {
   default     = "0.10.6"
 }
 
+variable "external_secrets_chart_version" {
+  description = <<-EOT
+    Helm chart version for external-secrets/external-secrets. Default 0.10.4,
+    which installs the v1beta1 CRDs the instance module's SecretStores use.
+    The container image tag is pinned separately in mirrored-images.json;
+    bumping this chart without that pin (and a CRD compatibility check) will
+    not move the running image and can break SecretStore admission.
+  EOT
+  type        = string
+  default     = "0.10.4"
+}
+
+variable "reloader_chart_version" {
+  description = <<-EOT
+    Helm chart version for stakater/reloader. Default 1.1.0. The container
+    image tag is pinned separately in mirrored-images.json; keep the two
+    together when bumping.
+  EOT
+  type        = string
+  default     = "1.1.0"
+}
+
 variable "central_ci_project_id" {
   description = <<-EOT
     GCP project that hosts Pavo's central Cloud Build (the one that builds
@@ -154,6 +179,23 @@ variable "install_private_ca" {
   default     = false
 }
 
+variable "network_posture" {
+  description = <<-EOT
+    Cell network posture. Mirrors the instance apiParameter: 'standard' (default —
+    NAT / public egress allowed) or 'strict' (dedicated zero-egress / endpoint-only
+    cell). Strict cells need the Route53 interface VPCE so host-cluster external-dns
+    can publish Omnistrate ingress names without NAT. Dedicated strict cells only
+    (1 cell = 1 customer). This is the only gate for the Route53 interface VPCE.
+  EOT
+  type        = string
+  default     = "standard"
+
+  validation {
+    condition     = contains(["standard", "strict"], var.network_posture)
+    error_message = "network_posture must be \"standard\" or \"strict\"."
+  }
+}
+
 variable "network_policy_ready" {
   description = <<-EOT
     Assert that AWS VPC CNI NetworkPolicy ENFORCEMENT is enabled on this cell
@@ -182,23 +224,21 @@ variable "eck_operator_chart_version" {
 }
 
 # -----------------------------------------------------------------------------
-# In-VPC observability (self-hosted Grafana/Prometheus) — opt-in per cell.
-# Mirrors enable_eck. When true, bootstrap installs the metrics stack + the OTel
+# In-VPC observability (self-hosted Grafana/Prometheus) — on by default.
+# When true, bootstrap installs the metrics stack + the OTel
 # collector into the pavo-observability namespace. See README "Cell self-hosting
-# flags". The BYOC instance plan defaults grafana_mode to self_hosted, so cells
-# that accept that default need this flag true (Phase 4 convergence barrier).
+# flags". No readiness SSM: a grafana_mode=self_hosted misroute just drops
+# telemetry (soft), unlike ECK's hard failure.
 # -----------------------------------------------------------------------------
 variable "enable_observability" {
   description = <<-EOT
     Install the in-VPC observability stack (Prometheus + Grafana + Postgres +
-    OTel collector) on this cell, for customers whose telemetry must not leave
-    the VPC (grafana_mode = self_hosted, the BYOC instance default). Opt-in per
-    cell, DEFAULTS OFF — a cell that keeps every instance on Grafana Cloud must
-    not run an unused monitoring stack. Cells that accept the instance default
-    must set this true.
+    OTel collector) on this cell (grafana_mode = self_hosted). DEFAULTS ON;
+    requires cell_kms_key_arn and observability_grafana_host. Set false only on a
+    cell whose instances send telemetry to Grafana Cloud (grafana_mode = cloud).
   EOT
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "observability_grafana_host" {
@@ -354,56 +394,16 @@ variable "observability_otel_collector_chart_version" {
   default     = "0.108.0"
 }
 
-variable "allow_lambda_microvms" {
-  description = <<-EOT
-    Keep the Lambda MicroVM statements (LambdaMicrovmsLifecycle and
-    LambdaMicrovmsPassConnector, marked "switch": "allow_lambda_microvms" in
-    policy-statements.json) in this account's workload permission boundary.
-
-    Default true, which is the boundary every account has today. Set false on
-    cells that don't use Lambda MicroVMs: the boundary then caps every MicroVM
-    action and lambda:PassNetworkConnector to nothing, whatever a workload
-    role's own policy says. The boundary is one account-scoped policy
-    (pavo-permission-boundary-shared), so flipping this updates that policy in
-    place; nothing is replaced.
-  EOT
-  type        = bool
-  default     = true
-}
-
 variable "cell_kms_key_arn" {
   description = <<-EOT
-    The cell's single customer-managed KMS key ARN — encrypts at rest under the
-    customer's own key: RDS, application S3, EFS filesystems created on
-    strict-posture instances, self-hosted ES + snapshots, the in-VPC
-    observability volumes and, with pd_balanced_use_cell_key = true, new
-    pd-balanced volumes. One key for the whole
-    deployment: least customer effort, uniform key custody. Required when
-    enable_observability = true (used for the gp3-cmk StorageClass the
-    observability PVCs bind to) or pd_balanced_use_cell_key = true.
+    The cell's single customer-managed KMS key ARN — encrypts everything at rest
+    under the customer's own key (RDS, self-hosted ES + snapshots, and the in-VPC
+    observability volumes). One key for the whole deployment: least customer
+    effort, uniform key custody. Required when enable_observability = true (used
+    for the gp3-cmk StorageClass the observability PVCs bind to).
   EOT
   type        = string
   default     = ""
-}
-
-variable "pd_balanced_use_cell_key" {
-  description = <<-EOT
-    Encrypt new volumes on the pd-balanced StorageClass (connector PVCs, and the
-    telemetry export queue with grafana_mode = "cloud") with cell_kms_key_arn,
-    set exactly as the gp3-cmk StorageClass sets it (encrypted = "true",
-    kmsKeyId = the cell key). cell_kms_key_arn is then required.
-
-    Default false, which is today's behaviour: the class sets no encryption, so
-    a volume is encrypted only if the account's EBS default encryption is on.
-
-    StorageClass parameters are immutable. Enabling this on an existing cell
-    replaces the pd-balanced class (deleted and recreated under the same
-    name); volumes that already exist are unaffected and keep their current
-    encryption. The cell key needs the EBS CSI driver prerequisites in
-    RUNBOOKS.md, "Customer-managed-key (CMK) EBS volumes".
-  EOT
-  type        = bool
-  default     = false
 }
 
 variable "cert_manager_namespace" {
@@ -416,7 +416,7 @@ variable "cert_manager_namespace" {
     Omnistrate-managed deployment-cell amenity and they install it into
     `cert-manager-ns`; its controller runs with
     `--cluster-resource-namespace=$(POD_NAMESPACE)`, so the cluster-resource
-    namespace follows the release namespace. Verified on two internal test
+    namespace follows the release namespace. Verified on live Omnistrate
     cells, 2026-09-15.
 
     Override only if a cell runs cert-manager somewhere else.
@@ -433,7 +433,7 @@ variable "cert_manager_namespace" {
 
     Not a concern for the default change from `cert-manager` to `cert-manager-ns`:
     no cell has ever had `install_private_ca = true`, so no CA key material exists
-    to preserve (verified on two internal test cells, 2026-09-15).
+    to preserve (verified on live Omnistrate cells, 2026-09-15).
   EOT
   type        = string
   default     = "cert-manager-ns"
@@ -485,4 +485,16 @@ variable "kubeconfig_path" {
     condition     = var.kubeconfig_path == "" || try(fileexists(var.kubeconfig_path), false)
     error_message = "kubeconfig_path must point at an existing file (or be empty to derive the endpoint from the cluster)."
   }
+}
+
+variable "enable_microvm_image_builds" {
+  description = "Initially create the account-owned MicroVM publisher/build boundaries. Once either readiness marker exists, false or omitted input retains them; decommission requires a separate drain and state-owned cleanup."
+  type        = bool
+  default     = false
+}
+
+variable "legacy_eso_cell_secret_read" {
+  description = "Keep the cell ESO role's account-wide read of RDS-managed (rds!*) secrets for instances still on the old per-instance ClusterSecretStore. Default false: the role denies all secret reads and each instance reads only its own secrets through its own SecretStore. Plan fails while any pavo-aws-sm-* ClusterSecretStore exists and this is false; upgrade those instances, or set true until they are upgraded."
+  type        = bool
+  default     = false
 }

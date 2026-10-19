@@ -60,8 +60,8 @@ output "gateway_redis_host_ip" {
 }
 
 output "gateway_redis_url" {
-  description = "Gateway Redis URL"
-  value       = "redis://${aws_elasticache_replication_group.gateway.primary_endpoint_address}:6379/0"
+  description = "Gateway Redis URL (AUTH token, when on, in Secret pavo-redis-auth)"
+  value       = local.redis_tls ? "rediss://${aws_elasticache_replication_group.gateway.primary_endpoint_address}:6379/0?ssl_check_hostname=true" : "redis://${aws_elasticache_replication_group.gateway.primary_endpoint_address}:6379/0"
 }
 
 output "intern_redis_host_ip" {
@@ -70,13 +70,24 @@ output "intern_redis_host_ip" {
 }
 
 output "intern_redis_url" {
-  description = "Intern Redis URL"
-  value       = "redis://${aws_elasticache_replication_group.intern.primary_endpoint_address}:6379/0"
+  description = "Intern Redis URL (AUTH token, when on, in Secret pavo-redis-auth)"
+  value       = local.redis_tls ? "rediss://${aws_elasticache_replication_group.intern.primary_endpoint_address}:6379/0?ssl_check_hostname=true" : "redis://${aws_elasticache_replication_group.intern.primary_endpoint_address}:6379/0"
 }
 
 output "onboarding_redis_host_ip" {
   description = "Onboarding Redis primary endpoint"
   value       = aws_elasticache_replication_group.onboarding.primary_endpoint_address
+}
+
+# App charts gate on these (spec aws-values redis.tls / redis.authSecretName).
+output "redis_tls" {
+  description = "\"true\" once redis_security_phase >= tls_preferred: clients connect with rediss://."
+  value       = tostring(local.redis_tls)
+}
+
+output "redis_auth_secret_name" {
+  description = "Secret holding the AUTH tokens once redis_security_phase >= tls_required; empty before."
+  value       = local.redis_auth ? kubernetes_secret_v1.redis_auth.metadata[0].name : ""
 }
 
 # -----------------------------------------------------------------------------
@@ -85,12 +96,12 @@ output "onboarding_redis_host_ip" {
 
 output "onboarding_bucket_name" {
   description = "Onboarding S3 bucket name (replaces gcs_bucket_name)"
-  value       = aws_s3_bucket.onboarding.bucket
+  value       = aws_s3_bucket.pavo["onboarding"].bucket
 }
 
 output "intern_data_bucket_name" {
   description = "Intern data S3 bucket name"
-  value       = aws_s3_bucket.intern_data.bucket
+  value       = aws_s3_bucket.pavo["intern_data"].bucket
 }
 
 # -----------------------------------------------------------------------------
@@ -99,12 +110,12 @@ output "intern_data_bucket_name" {
 
 output "publisher_topic_arn" {
   description = "SNS data-fetcher topic ARN (replaces pubsub_topic_name)"
-  value       = aws_sns_topic.data_fetcher.arn
+  value       = aws_sns_topic.pavo["data_fetcher"].arn
 }
 
 output "publisher_dedup_topic_arn" {
   description = "SNS dedup topic ARN (replaces pubsub_deduplicated_topic_name)"
-  value       = aws_sns_topic.dedup.arn
+  value       = aws_sns_topic.pavo["dedup"].arn
 }
 
 output "connector_sync_topic_arn" {
@@ -114,17 +125,17 @@ output "connector_sync_topic_arn" {
 
 output "orchestrator_subscription_url" {
   description = "SQS orchestrator queue URL (replaces orchestrator_subscription_name)"
-  value       = aws_sqs_queue.orch.url
+  value       = aws_sqs_queue.worker["orch"].url
 }
 
 output "nugget_subscription_url" {
   description = "SQS nugget queue URL (replaces nugget_subscription_name)"
-  value       = aws_sqs_queue.nugget.url
+  value       = aws_sqs_queue.worker["nugget"].url
 }
 
 output "rag_subscription_url" {
   description = "SQS RAG queue URL (replaces rag_subscription_name)"
-  value       = aws_sqs_queue.rag.url
+  value       = aws_sqs_queue.worker["rag"].url
 }
 
 # -----------------------------------------------------------------------------
@@ -133,17 +144,17 @@ output "rag_subscription_url" {
 
 output "orchestrator_dlq_subscription_url" {
   description = "SQS orchestrator DLQ URL (replaces orchestrator_dlq_subscription_name)"
-  value       = aws_sqs_queue.orch_dlq.url
+  value       = aws_sqs_queue.worker_dlq["orch"].url
 }
 
 output "nugget_dlq_subscription_url" {
   description = "SQS nugget DLQ URL (replaces nugget_dlq_subscription_name)"
-  value       = aws_sqs_queue.nugget_dlq.url
+  value       = aws_sqs_queue.worker_dlq["nugget"].url
 }
 
 output "rag_dlq_subscription_url" {
   description = "SQS RAG DLQ URL (replaces rag_dlq_subscription_name)"
-  value       = aws_sqs_queue.rag_dlq.url
+  value       = aws_sqs_queue.worker_dlq["rag"].url
 }
 
 # -----------------------------------------------------------------------------
@@ -170,8 +181,13 @@ output "aws_account_id" {
 }
 
 output "customer_name" {
-  description = "Customer name"
+  description = "Customer name. Tenant identity — keep hyphens. Do not use this as a PostgreSQL schema identifier."
   value       = var.customer_name
+}
+
+output "normalized_customer_name" {
+  description = "customer_name with hyphens replaced by underscores for PostgreSQL schema identifiers. Tenant identity remains customer_name. Workload schema convention is <normalized_customer_name>_v1. Hyphen-only replacement; no broader identifier validation or existing-schema migration."
+  value       = replace(var.customer_name, "-", "_")
 }
 
 output "app_domain" {
@@ -185,20 +201,20 @@ output "app_domain" {
 
 output "elasticsearch_endpoint" {
   description = "Elasticsearch HTTPS endpoint URL"
-  value = var.es_mode == "self_hosted" ? (
+  value = local.effective_es_mode == "self_hosted" ? (
     "https://${local.es_name}-es-http.${var.instance_id}.svc:9200"
   ) : one(ec_deployment.onboarding_es[*].elasticsearch.https_endpoint)
 }
 
 output "elasticsearch_cloud_id" {
   description = "Elasticsearch Cloud ID (empty on self_hosted)"
-  value       = var.es_mode == "self_hosted" ? "" : one(ec_deployment.onboarding_es[*].elasticsearch.cloud_id)
+  value       = local.effective_es_mode == "self_hosted" ? "" : one(ec_deployment.onboarding_es[*].elasticsearch.cloud_id)
 }
 
 output "elasticsearch_api_key" {
   description = "Elasticsearch API key (id:key format; empty on self_hosted)"
   value = (
-    var.es_mode == "self_hosted" ? "" :
+    local.effective_es_mode == "self_hosted" ? "" :
     var.elasticsearch_api_key != "" ? var.elasticsearch_api_key :
     "${one(elasticstack_elasticsearch_security_api_key.app_api_key[*].key_id)}:${one(elasticstack_elasticsearch_security_api_key.app_api_key[*].api_key)}"
   )
@@ -209,21 +225,21 @@ output "elasticsearch_api_key" {
 # fileRealm user secret, consumed by the app pods (see spec-byoc.yaml wiring).
 output "elasticsearch_ca_cert_secret_name" {
   description = "Name of the ECK HTTP CA secret (self_hosted only; key ca.crt)"
-  value       = var.es_mode == "self_hosted" ? "${local.es_name}-es-http-certs-public" : ""
+  value       = local.effective_es_mode == "self_hosted" ? "${local.es_name}-es-http-certs-public" : ""
 }
 
 output "elasticsearch_app_user_secret_name" {
   description = "Name of the app fileRealm user secret (self_hosted only; keys username/password/roles)"
-  value       = var.es_mode == "self_hosted" ? "es-app-user" : ""
+  value       = local.effective_es_mode == "self_hosted" ? "es-app-user" : ""
 }
 
-# Observability routing mode — default self_hosted. Apps read this to send
-# metrics to the in-VPC stack, or to Grafana Cloud when set to cloud. No
-# per-instance TF resources: the in-VPC stack is cell-scoped, provisioned by
-# pavo-bootstrap-aws (var.enable_observability), so this just echoes the flag.
+# Observability routing mode — apps read this to send metrics to Grafana Cloud
+# (cloud) or the in-VPC observability stack (self_hosted). No per-instance TF
+# resources: the in-VPC stack is cell-scoped, provisioned by pavo-bootstrap-aws
+# (var.enable_observability), so this just echoes the flag.
 output "grafana_mode" {
-  description = "cloud | self_hosted — apps switch their telemetry routing on this."
-  value       = var.grafana_mode
+  description = "cloud | self_hosted — apps switch their telemetry routing on this. Strict cells always emit self_hosted."
+  value       = local.effective_grafana_mode
 }
 
 # -----------------------------------------------------------------------------
@@ -233,8 +249,8 @@ output "grafana_mode" {
 # handoff objects (below) carry it. All empty/cloud on the default path.
 # -----------------------------------------------------------------------------
 output "zitadel_mode" {
-  description = "cloud | self_hosted — apps switch their auth wiring on this."
-  value       = var.zitadel_mode
+  description = "cloud | self_hosted — apps switch their auth wiring on this. Strict cells always emit self_hosted."
+  value       = local.effective_zitadel_mode
 }
 
 output "email_enabled" {
@@ -300,8 +316,8 @@ output "zitadel_oidc_redirect_uri" {
 # -----------------------------------------------------------------------------
 
 output "temporal_mode" {
-  description = "Echo of temporal_mode so app charts can gate on it."
-  value       = var.temporal_mode
+  description = "Echo of temporal_mode so app charts can gate on it. Strict cells always emit self_hosted."
+  value       = local.effective_temporal_mode
 }
 
 output "temporal_host" {

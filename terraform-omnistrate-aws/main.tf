@@ -38,8 +38,8 @@ data "aws_caller_identity" "current" {}
 # -----------------------------------------------------------------------------
 # Bootstrap-module integration "API"
 # These SSM parameters are written by the customer-applied pavo-bootstrap-aws
-# module. They carry the ESO IRSA role ARN and the two permission boundaries
-# we attach to workload roles.
+# module. This module reads only the workload permission boundary it attaches
+# to workload roles.
 # -----------------------------------------------------------------------------
 
 data "aws_ssm_parameter" "permission_boundary_arn" {
@@ -135,17 +135,15 @@ resource "aws_security_group" "elasticache" {
 
   # Scoped to the EKS cluster security group, NOT the VPC CIDR.
   #
-  # This security group is the ONLY access control on Redis. The replication
-  # groups run with transit_encryption_enabled = false and the account's
-  # `default` / no-password user, so anything that can reach port 6379 can read
-  # and write Pavo's gateway, intern and onboarding caches in plaintext. With
-  # ingress open to the whole VPC CIDR, and that VPC being the CUSTOMER's under
-  # BYOC, "anything" included every unrelated resource the customer runs there.
+  # Until redis_security_phase = enforced, plaintext or token-less clients are
+  # accepted, so this security group is the effective access control on Redis.
+  # With ingress open to the whole VPC CIDR, and that VPC being the CUSTOMER's
+  # under BYOC, every unrelated resource they run could reach it.
   #
   # The cluster security group is attached to every managed node group instance,
   # and with ENABLE_POD_ENI=false pods inherit the security groups on the node
   # ENIs, so this is the correct handle for "traffic originating from an EKS
-  # pod". Verified on an internal test cell: ENABLE_POD_ENI=false,
+  # pod". Verified on a live cell: ENABLE_POD_ENI=false,
   # AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG=false, zero SecurityGroupPolicy objects,
   # and all 9 running nodes carry the cluster security group.
   #
@@ -154,9 +152,8 @@ resource "aws_security_group" "elasticache" {
   # security groups and this rule stops matching. Re-scope it in the same change
   # that enables that feature.
   #
-  # This narrows who can reach Redis; it does not authenticate them. Any pod on
-  # the cluster still can. Real authentication needs transit encryption plus an
-  # auth token, which is a staged cross-repo migration tracked separately.
+  # This narrows who can reach Redis; authentication is the AUTH token on the
+  # replication groups below.
   ingress {
     from_port       = 6379
     to_port         = 6379
@@ -181,11 +178,13 @@ resource "aws_security_group" "efs" {
   description = "Allow NFS access from EKS pods"
   vpc_id      = var.vpc_id
 
+  # Cluster SG, not VPC CIDR: other hosts in the customer VPC must not reach NFS.
+  # Same node-ENI assumptions as aws_security_group.elasticache above.
   ingress {
-    from_port   = 2049
-    to_port     = 2049
-    protocol    = "tcp"
-    cidr_blocks = [data.aws_vpc.eks.cidr_block]
+    from_port       = 2049
+    to_port         = 2049
+    protocol        = "tcp"
+    security_groups = [data.aws_eks_cluster.primary.vpc_config[0].cluster_security_group_id]
   }
 
   egress {
@@ -273,7 +272,7 @@ resource "kubernetes_job_v1" "create_databases" {
       spec {
         container {
           name    = "psql"
-          image   = "public.ecr.aws/docker/library/postgres:16-alpine"
+          image   = local.image.postgres_16_alpine
           command = ["/bin/sh", "-c"]
           args = [<<-EOT
             for db in pavo-gateway-db pavo-intern-db pavo-onboarding-db pavo-knm-db; do
@@ -333,6 +332,38 @@ resource "kubernetes_job_v1" "create_databases" {
 # ElastiCache Redis ×3 (cluster mode off = single replication group)
 # -----------------------------------------------------------------------------
 
+# redis_security_phase: AWS forbids skipping steps on an existing group (TLS
+# preferred before required; token ROTATE (optional) before SET (required)).
+# The provider applies the transit change, waits, then the token change.
+# apply_immediately: else the transit change may defer to the maintenance window
+# while the token modify (always immediate) needs TLS already on.
+locals {
+  redis_phase_index    = index(["off", "tls_preferred", "tls_required", "enforced"], var.redis_security_phase)
+  redis_tls            = local.redis_phase_index >= 1
+  redis_auth           = local.redis_phase_index >= 2 # AWS rejects a token with TLS preferred
+  redis_tls_mode       = local.redis_tls ? (local.redis_auth ? "required" : "preferred") : null
+  redis_token_strategy = local.redis_auth ? (var.redis_security_phase == "enforced" ? "SET" : "ROTATE") : null
+}
+
+# ElastiCache allows only (!&#$^<>-) as specials; alphanumeric keeps URLs unescaped.
+resource "random_password" "redis_auth" {
+  for_each = toset(["gateway", "intern", "onboarding"])
+  length   = 64
+  special  = false
+}
+
+# Consumed by the app charts via secretKeyRef (spec aws-values: redis.authSecretName/Key).
+resource "kubernetes_secret_v1" "redis_auth" {
+  metadata {
+    name      = "pavo-redis-auth"
+    namespace = var.instance_id
+  }
+
+  data = { for k, v in random_password.redis_auth : k => v.result }
+
+  depends_on = [kubectl_manifest.instance_namespace]
+}
+
 resource "aws_elasticache_subnet_group" "pavo" {
   name       = "pavo-ec-subnet-${var.instance_id}"
   subnet_ids = data.aws_subnets.private.ids
@@ -346,7 +377,7 @@ resource "aws_elasticache_replication_group" "gateway" {
   replication_group_id = "pavo-gw-redis-${var.instance_id}"
   description          = "Pavo gateway Redis (${var.instance_id})"
 
-  node_type                  = "cache.t3.medium"
+  node_type                  = var.redis_node_type
   num_cache_clusters         = 1
   engine_version             = "7.1"
   port                       = 6379
@@ -356,7 +387,21 @@ resource "aws_elasticache_replication_group" "gateway" {
   subnet_group_name          = aws_elasticache_subnet_group.pavo.name
   security_group_ids         = [aws_security_group.elasticache.id]
   at_rest_encryption_enabled = true
-  transit_encryption_enabled = false # pod-to-Redis within VPC
+  kms_key_id                 = data.aws_kms_key.cell_cmk.arn
+  # Key change forces a recreate: existing groups keep their key, new ones get the CMK.
+  lifecycle {
+    ignore_changes = [kms_key_id]
+  }
+  transit_encryption_enabled = local.redis_tls
+  transit_encryption_mode    = local.redis_tls_mode
+  auth_token                 = local.redis_auth ? random_password.redis_auth["gateway"].result : null
+  auth_token_update_strategy = local.redis_token_strategy
+  apply_immediately          = true
+
+  # TLS modifies can exceed the provider's 40m default.
+  timeouts {
+    update = "90m"
+  }
 
   tags = {
     Name = "pavo-gw-redis-${var.instance_id}"
@@ -367,7 +412,7 @@ resource "aws_elasticache_replication_group" "onboarding" {
   replication_group_id = "pavo-onboard-redis-${var.instance_id}"
   description          = "Pavo onboarding Redis (${var.instance_id})"
 
-  node_type                  = "cache.t3.medium"
+  node_type                  = var.redis_node_type
   num_cache_clusters         = 1
   engine_version             = "7.1"
   port                       = 6379
@@ -377,20 +422,32 @@ resource "aws_elasticache_replication_group" "onboarding" {
   subnet_group_name          = aws_elasticache_subnet_group.pavo.name
   security_group_ids         = [aws_security_group.elasticache.id]
   at_rest_encryption_enabled = true
-  transit_encryption_enabled = false
+  kms_key_id                 = data.aws_kms_key.cell_cmk.arn
+  # Key change forces a recreate: existing groups keep their key, new ones get the CMK.
+  lifecycle {
+    ignore_changes = [kms_key_id]
+  }
+  transit_encryption_enabled = local.redis_tls
+  transit_encryption_mode    = local.redis_tls_mode
+  auth_token                 = local.redis_auth ? random_password.redis_auth["onboarding"].result : null
+  auth_token_update_strategy = local.redis_token_strategy
+  apply_immediately          = true
+
+  # TLS modifies can exceed the provider's 40m default.
+  timeouts {
+    update = "90m"
+  }
 
   tags = {
     Name = "pavo-onboard-redis-${var.instance_id}"
   }
-
-  depends_on = [aws_elasticache_replication_group.gateway]
 }
 
 resource "aws_elasticache_replication_group" "intern" {
   replication_group_id = "pavo-intern-redis-${var.instance_id}"
   description          = "Pavo intern Redis (${var.instance_id})"
 
-  node_type                  = "cache.t3.medium"
+  node_type                  = var.redis_node_type
   num_cache_clusters         = 1
   engine_version             = "7.1"
   port                       = 6379
@@ -400,13 +457,25 @@ resource "aws_elasticache_replication_group" "intern" {
   subnet_group_name          = aws_elasticache_subnet_group.pavo.name
   security_group_ids         = [aws_security_group.elasticache.id]
   at_rest_encryption_enabled = true
-  transit_encryption_enabled = false
+  kms_key_id                 = data.aws_kms_key.cell_cmk.arn
+  # Key change forces a recreate: existing groups keep their key, new ones get the CMK.
+  lifecycle {
+    ignore_changes = [kms_key_id]
+  }
+  transit_encryption_enabled = local.redis_tls
+  transit_encryption_mode    = local.redis_tls_mode
+  auth_token                 = local.redis_auth ? random_password.redis_auth["intern"].result : null
+  auth_token_update_strategy = local.redis_token_strategy
+  apply_immediately          = true
+
+  # TLS modifies can exceed the provider's 40m default.
+  timeouts {
+    update = "90m"
+  }
 
   tags = {
     Name = "pavo-intern-redis-${var.instance_id}"
   }
-
-  depends_on = [aws_elasticache_replication_group.onboarding]
 }
 
 # -----------------------------------------------------------------------------
@@ -425,26 +494,31 @@ locals {
     ["https://${local.app_domain}", "http://localhost:3000", "http://localhost:5173"],
     var.extra_cors_origins
   )
-}
 
-resource "aws_s3_bucket" "onboarding" {
-  bucket        = "pavo-${var.customer_name}-onboard-${var.instance_id}"
-  force_destroy = var.force_destroy_buckets
-
-  tags = {
-    Name = "pavo-${var.customer_name}-onboard-${var.instance_id}"
+  s3_buckets = {
+    onboarding  = { name = "pavo-${var.customer_name}-onboard-${var.instance_id}" }
+    intern_data = { name = "pavo-${var.customer_name}-data-${var.instance_id}" }
   }
 }
 
-resource "aws_s3_bucket_versioning" "onboarding" {
-  bucket = aws_s3_bucket.onboarding.id
+resource "aws_s3_bucket" "pavo" {
+  for_each      = local.s3_buckets
+  bucket        = each.value.name
+  force_destroy = var.force_destroy_buckets
+  tags          = { Name = each.value.name }
+}
+
+resource "aws_s3_bucket_versioning" "pavo" {
+  for_each = aws_s3_bucket.pavo
+  bucket   = each.value.id
   versioning_configuration {
     status = "Enabled"
   }
 }
 
-resource "aws_s3_bucket_lifecycle_configuration" "onboarding" {
-  bucket = aws_s3_bucket.onboarding.id
+resource "aws_s3_bucket_lifecycle_configuration" "pavo" {
+  for_each = aws_s3_bucket.pavo
+  bucket   = each.value.id
 
   rule {
     id     = "retain-live-reap-archived-versions"
@@ -458,84 +532,32 @@ resource "aws_s3_bucket_lifecycle_configuration" "onboarding" {
     }
   }
 
-  depends_on = [aws_s3_bucket_versioning.onboarding]
+  depends_on = [aws_s3_bucket_versioning.pavo]
 }
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "onboarding" {
-  bucket = aws_s3_bucket.onboarding.id
+resource "aws_s3_bucket_server_side_encryption_configuration" "pavo" {
+  for_each = aws_s3_bucket.pavo
+  bucket   = each.value.id
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm     = "aws:kms"
-      kms_master_key_id = var.cell_kms_key_arn
+      sse_algorithm = "AES256"
     }
-    bucket_key_enabled = true
   }
 }
 
-resource "aws_s3_bucket_public_access_block" "onboarding" {
-  bucket                  = aws_s3_bucket.onboarding.id
+resource "aws_s3_bucket_public_access_block" "pavo" {
+  for_each                = aws_s3_bucket.pavo
+  bucket                  = each.value.id
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
 }
 
-resource "aws_s3_bucket" "intern_data" {
-  bucket        = "pavo-${var.customer_name}-data-${var.instance_id}"
-  force_destroy = var.force_destroy_buckets
-
-  tags = {
-    Name = "pavo-${var.customer_name}-data-${var.instance_id}"
-  }
-}
-
-resource "aws_s3_bucket_versioning" "intern_data" {
-  bucket = aws_s3_bucket.intern_data.id
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_lifecycle_configuration" "intern_data" {
-  bucket = aws_s3_bucket.intern_data.id
-
-  rule {
-    id     = "retain-live-reap-archived-versions"
-    status = "Enabled"
-
-    filter {}
-
-    noncurrent_version_expiration {
-      noncurrent_days           = 1
-      newer_noncurrent_versions = 10
-    }
-  }
-
-  depends_on = [aws_s3_bucket_versioning.intern_data]
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "intern_data" {
-  bucket = aws_s3_bucket.intern_data.id
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm     = "aws:kms"
-      kms_master_key_id = var.cell_kms_key_arn
-    }
-    bucket_key_enabled = true
-  }
-}
-
-resource "aws_s3_bucket_public_access_block" "intern_data" {
-  bucket                  = aws_s3_bucket.intern_data.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-# CORS for intern_data bucket (presigned URL access from browser)
+# CORS is intern_data only (presigned URL access from the browser). Do not
+# add it to onboarding — that would be a real AWS change, not a DRY rewrite.
 resource "aws_s3_bucket_cors_configuration" "intern_data" {
-  bucket = aws_s3_bucket.intern_data.id
+  bucket = aws_s3_bucket.pavo["intern_data"].id
 
   cors_rule {
     allowed_headers = ["*"]
@@ -546,177 +568,187 @@ resource "aws_s3_bucket_cors_configuration" "intern_data" {
   }
 }
 
+# Singleton -> for_each address remap. Without these, apply would destroy the
+# live buckets and create empty ones with the same names.
+moved {
+  from = aws_s3_bucket.onboarding
+  to   = aws_s3_bucket.pavo["onboarding"]
+}
+moved {
+  from = aws_s3_bucket.intern_data
+  to   = aws_s3_bucket.pavo["intern_data"]
+}
+moved {
+  from = aws_s3_bucket_versioning.onboarding
+  to   = aws_s3_bucket_versioning.pavo["onboarding"]
+}
+moved {
+  from = aws_s3_bucket_versioning.intern_data
+  to   = aws_s3_bucket_versioning.pavo["intern_data"]
+}
+moved {
+  from = aws_s3_bucket_lifecycle_configuration.onboarding
+  to   = aws_s3_bucket_lifecycle_configuration.pavo["onboarding"]
+}
+moved {
+  from = aws_s3_bucket_lifecycle_configuration.intern_data
+  to   = aws_s3_bucket_lifecycle_configuration.pavo["intern_data"]
+}
+moved {
+  from = aws_s3_bucket_server_side_encryption_configuration.onboarding
+  to   = aws_s3_bucket_server_side_encryption_configuration.pavo["onboarding"]
+}
+moved {
+  from = aws_s3_bucket_server_side_encryption_configuration.intern_data
+  to   = aws_s3_bucket_server_side_encryption_configuration.pavo["intern_data"]
+}
+moved {
+  from = aws_s3_bucket_public_access_block.onboarding
+  to   = aws_s3_bucket_public_access_block.pavo["onboarding"]
+}
+moved {
+  from = aws_s3_bucket_public_access_block.intern_data
+  to   = aws_s3_bucket_public_access_block.pavo["intern_data"]
+}
+
 # -----------------------------------------------------------------------------
 # SNS Topics ×2 + SQS Queues ×3 main + ×3 DLQ
 # -----------------------------------------------------------------------------
+# Not three identical stacks: 2 topics, 3 queues, uneven wiring
+# (orch → data_fetcher; nugget + rag → dedup). connector_sync below is a
+# separate one-topic / N-queue for_each and is left alone.
 
-# SNS topics
-resource "aws_sns_topic" "data_fetcher" {
-  name = "pavo-data-fetcher-topic-${var.instance_id}"
-  # Same AWS-managed SNS key as connector_sync. Not the cell CMK: SNS→SQS
-  # delivery works without extra key-policy grants.
-  kms_master_key_id = "alias/aws/sns"
-
-  tags = {
-    Name = "pavo-data-fetcher-topic-${var.instance_id}"
+locals {
+  worker_topics = {
+    data_fetcher = { name = "pavo-data-fetcher-topic-${var.instance_id}" }
+    dedup        = { name = "pavo-dedup-topic-${var.instance_id}" }
+  }
+  worker_queues = {
+    orch   = { topic = "data_fetcher" }
+    nugget = { topic = "dedup" }
+    rag    = { topic = "dedup" }
   }
 }
 
-resource "aws_sns_topic" "dedup" {
-  name              = "pavo-dedup-topic-${var.instance_id}"
-  kms_master_key_id = "alias/aws/sns"
-
-  tags = {
-    Name = "pavo-dedup-topic-${var.instance_id}"
+resource "aws_sns_topic" "pavo" {
+  for_each          = local.worker_topics
+  name              = each.value.name
+  kms_master_key_id = data.aws_kms_key.cell_cmk.arn
+  # Existing topics keep their key so cells without the SNS boundary grant keep publishing.
+  lifecycle {
+    ignore_changes = [kms_master_key_id]
   }
+  tags = { Name = each.value.name }
 }
 
 # SQS DLQs (must exist before main queues reference them)
-resource "aws_sqs_queue" "orch_dlq" {
-  name                      = "pavo-orch-dlq-${var.instance_id}"
+resource "aws_sqs_queue" "worker_dlq" {
+  for_each                  = local.worker_queues
+  name                      = "pavo-${each.key}-dlq-${var.instance_id}"
   message_retention_seconds = 1209600 # 14 days
-
-  tags = {
-    Name = "pavo-orch-dlq-${var.instance_id}"
-  }
+  tags                      = { Name = "pavo-${each.key}-dlq-${var.instance_id}" }
 }
 
-resource "aws_sqs_queue" "nugget_dlq" {
-  name                      = "pavo-nugget-dlq-${var.instance_id}"
-  message_retention_seconds = 1209600
-
-  tags = {
-    Name = "pavo-nugget-dlq-${var.instance_id}"
-  }
-}
-
-resource "aws_sqs_queue" "rag_dlq" {
-  name                      = "pavo-rag-dlq-${var.instance_id}"
-  message_retention_seconds = 1209600
-
-  tags = {
-    Name = "pavo-rag-dlq-${var.instance_id}"
-  }
-}
-
-# SQS main queues with redrive to DLQs
-resource "aws_sqs_queue" "orch" {
-  name                       = "pavo-orch-sub-${var.instance_id}"
+# SQS main queues with redrive to DLQs. 7-day retention: these workers are KEDA
+# scale-to-zero (minReplicas 0), so a wedged-at-0 weekend must not lose
+# messages. Matches the GCP worker subs' 7-day default and the connector_sync
+# queues. (DLQs already retain 14 days.)
+resource "aws_sqs_queue" "worker" {
+  for_each                   = local.worker_queues
+  name                       = "pavo-${each.key}-sub-${var.instance_id}"
   visibility_timeout_seconds = 600
-  # 7 days — these workers are KEDA scale-to-zero (minReplicas 0), so a wedged-at-0
-  # weekend must not lose messages; matches the GCP worker subs' 7-day default and the
-  # connector_sync queues. (DLQs already retain 14 days.)
-  message_retention_seconds = 604800
+  message_retention_seconds  = 604800
 
   redrive_policy = jsonencode({
-    deadLetterTargetArn = aws_sqs_queue.orch_dlq.arn
+    deadLetterTargetArn = aws_sqs_queue.worker_dlq[each.key].arn
     maxReceiveCount     = 5
   })
 
-  tags = {
-    Name = "pavo-orch-sub-${var.instance_id}"
-  }
+  tags = { Name = "pavo-${each.key}-sub-${var.instance_id}" }
 }
 
-resource "aws_sqs_queue" "nugget" {
-  name                       = "pavo-nugget-sub-${var.instance_id}"
-  visibility_timeout_seconds = 600
-  message_retention_seconds  = 604800 # 7d, scale-to-zero buffer (see orch above)
-
-  redrive_policy = jsonencode({
-    deadLetterTargetArn = aws_sqs_queue.nugget_dlq.arn
-    maxReceiveCount     = 5
-  })
-
-  tags = {
-    Name = "pavo-nugget-sub-${var.instance_id}"
-  }
-}
-
-resource "aws_sqs_queue" "rag" {
-  name                       = "pavo-rag-sub-${var.instance_id}"
-  visibility_timeout_seconds = 600
-  message_retention_seconds  = 604800 # 7d, scale-to-zero buffer (see orch above)
-
-  redrive_policy = jsonencode({
-    deadLetterTargetArn = aws_sqs_queue.rag_dlq.arn
-    maxReceiveCount     = 5
-  })
-
-  tags = {
-    Name = "pavo-rag-sub-${var.instance_id}"
-  }
-}
-
-# SNS → SQS subscriptions
-resource "aws_sns_topic_subscription" "orch" {
-  topic_arn            = aws_sns_topic.data_fetcher.arn
+resource "aws_sns_topic_subscription" "worker" {
+  for_each             = local.worker_queues
+  topic_arn            = aws_sns_topic.pavo[each.value.topic].arn
   protocol             = "sqs"
-  endpoint             = aws_sqs_queue.orch.arn
+  endpoint             = aws_sqs_queue.worker[each.key].arn
   raw_message_delivery = true
 }
 
-resource "aws_sns_topic_subscription" "nugget" {
-  topic_arn            = aws_sns_topic.dedup.arn
-  protocol             = "sqs"
-  endpoint             = aws_sqs_queue.nugget.arn
-  raw_message_delivery = true
-}
-
-resource "aws_sns_topic_subscription" "rag" {
-  topic_arn            = aws_sns_topic.dedup.arn
-  protocol             = "sqs"
-  endpoint             = aws_sqs_queue.rag.arn
-  raw_message_delivery = true
-}
-
-# SQS queue policies — allow SNS to deliver messages
-resource "aws_sqs_queue_policy" "orch" {
-  queue_url = aws_sqs_queue.orch.id
+resource "aws_sqs_queue_policy" "worker" {
+  for_each  = local.worker_queues
+  queue_url = aws_sqs_queue.worker[each.key].id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
       Principal = { Service = "sns.amazonaws.com" }
       Action    = "sqs:SendMessage"
-      Resource  = aws_sqs_queue.orch.arn
+      Resource  = aws_sqs_queue.worker[each.key].arn
       Condition = {
-        ArnEquals = { "aws:SourceArn" = aws_sns_topic.data_fetcher.arn }
+        ArnEquals = { "aws:SourceArn" = aws_sns_topic.pavo[each.value.topic].arn }
       }
     }]
   })
 }
 
-resource "aws_sqs_queue_policy" "nugget" {
-  queue_url = aws_sqs_queue.nugget.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "sns.amazonaws.com" }
-      Action    = "sqs:SendMessage"
-      Resource  = aws_sqs_queue.nugget.arn
-      Condition = {
-        ArnEquals = { "aws:SourceArn" = aws_sns_topic.dedup.arn }
-      }
-    }]
-  })
+# Singleton -> for_each address remap. Without these, apply would destroy the
+# live topics/queues (dropping in-flight messages) and create new ones.
+moved {
+  from = aws_sns_topic.data_fetcher
+  to   = aws_sns_topic.pavo["data_fetcher"]
 }
-
-resource "aws_sqs_queue_policy" "rag" {
-  queue_url = aws_sqs_queue.rag.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "sns.amazonaws.com" }
-      Action    = "sqs:SendMessage"
-      Resource  = aws_sqs_queue.rag.arn
-      Condition = {
-        ArnEquals = { "aws:SourceArn" = aws_sns_topic.dedup.arn }
-      }
-    }]
-  })
+moved {
+  from = aws_sns_topic.dedup
+  to   = aws_sns_topic.pavo["dedup"]
+}
+moved {
+  from = aws_sqs_queue.orch_dlq
+  to   = aws_sqs_queue.worker_dlq["orch"]
+}
+moved {
+  from = aws_sqs_queue.nugget_dlq
+  to   = aws_sqs_queue.worker_dlq["nugget"]
+}
+moved {
+  from = aws_sqs_queue.rag_dlq
+  to   = aws_sqs_queue.worker_dlq["rag"]
+}
+moved {
+  from = aws_sqs_queue.orch
+  to   = aws_sqs_queue.worker["orch"]
+}
+moved {
+  from = aws_sqs_queue.nugget
+  to   = aws_sqs_queue.worker["nugget"]
+}
+moved {
+  from = aws_sqs_queue.rag
+  to   = aws_sqs_queue.worker["rag"]
+}
+moved {
+  from = aws_sns_topic_subscription.orch
+  to   = aws_sns_topic_subscription.worker["orch"]
+}
+moved {
+  from = aws_sns_topic_subscription.nugget
+  to   = aws_sns_topic_subscription.worker["nugget"]
+}
+moved {
+  from = aws_sns_topic_subscription.rag
+  to   = aws_sns_topic_subscription.worker["rag"]
+}
+moved {
+  from = aws_sqs_queue_policy.orch
+  to   = aws_sqs_queue_policy.worker["orch"]
+}
+moved {
+  from = aws_sqs_queue_policy.nugget
+  to   = aws_sqs_queue_policy.worker["nugget"]
+}
+moved {
+  from = aws_sqs_queue_policy.rag
+  to   = aws_sqs_queue_policy.worker["rag"]
 }
 
 # -----------------------------------------------------------------------------
@@ -745,11 +777,13 @@ locals {
 }
 
 resource "aws_sns_topic" "connector_sync" {
-  name = "pavo-connector-sync-topic-${var.instance_id}"
-  # Encrypt at rest with the AWS-managed SNS CMK (SSE). alias/aws/sns needs no key
-  # policy and lets SNS→SQS delivery work without extra grants.
-  kms_master_key_id = "alias/aws/sns"
-  tags              = { Name = "pavo-connector-sync-topic-${var.instance_id}" }
+  name              = "pavo-connector-sync-topic-${var.instance_id}"
+  kms_master_key_id = data.aws_kms_key.cell_cmk.arn
+  # Existing topics keep their key so cells without the SNS boundary grant keep publishing.
+  lifecycle {
+    ignore_changes = [kms_master_key_id]
+  }
+  tags = { Name = "pavo-connector-sync-topic-${var.instance_id}" }
 }
 
 # Shared DLQ for all connector queues.
@@ -862,7 +896,7 @@ data "aws_iam_policy_document" "keda_sqs" {
     actions = ["sqs:GetQueueAttributes"]
     resources = concat(
       [for q in aws_sqs_queue.connector_sync : q.arn],
-      [aws_sqs_queue.orch.arn, aws_sqs_queue.nugget.arn, aws_sqs_queue.rag.arn],
+      [for q in aws_sqs_queue.worker : q.arn],
     )
   }
 }
@@ -875,7 +909,7 @@ resource "aws_iam_role_policy" "keda_sqs" {
 
 # The ClusterTriggerAuthentication (aws-sqs-queue-auth) that the chart's ScaledObjects
 # reference by name is NOT here — it's a cluster-scoped, fixed-name singleton, so it
-# lives in the KEDA cell amenity (Pavo's cell-amenity config), created by the keda
+# lives in the KEDA cell amenity, created by the keda
 # Helm release as a post-install/post-upgrade hook (so it applies after the keda.sh CRDs
 # are registered — see that file for why). Keeping it out of per-instance terraform
 # removes the cold-cell "CRD not yet installed" apply race. This module owns only the
@@ -888,7 +922,7 @@ resource "aws_iam_role_policy" "keda_sqs" {
 # Safe no-op if it was never in state.
 #
 # MIGRATION CAVEAT (one-time, only on a cell where the old kubectl_manifest was applied,
-# e.g. Pavo's test cell): the live CTA was created by terraform's field-manager with no Helm
+# e.g. a cell that ran the old path): the live CTA was created by terraform's field-manager with no Helm
 # ownership metadata, so the amenity's Helm release can't adopt it and the upgrade
 # fails ("invalid ownership metadata"). Before the amenity rolls, either delete it
 # (`kubectl delete clustertriggerauthentication aws-sqs-queue-auth`) or label/annotate
@@ -905,19 +939,9 @@ removed {
 # EFS (RWX PVCs — Filestore equivalent)
 # -----------------------------------------------------------------------------
 
-locals {
-  # The cell key applies to filesystems created on strict instances; standard
-  # instances get null, i.e. the AWS-managed EFS key, as before.
-  # network_posture is fixed at instance creation (modifiable: false in the
-  # spec). kms_key_id is ForceNew, so the resource below ignores later changes
-  # to it: an existing filesystem is never replaced because of its key,
-  # whatever key it was created with.
-  efs_kms_key_id = var.network_posture == "strict" ? var.cell_kms_key_arn : null
-}
-
 resource "aws_efs_file_system" "pavo" {
   encrypted  = true
-  kms_key_id = local.efs_kms_key_id
+  kms_key_id = data.aws_kms_key.cell_cmk.arn
 
   lifecycle_policy {
     transition_to_ia = "AFTER_30_DAYS"
@@ -934,7 +958,7 @@ resource "aws_efs_file_system" "pavo" {
     # dynamic PVC bind calls CreateAccessPoint against this filesystem; without
     # the tag it sits outside that ceiling and the call is denied at the
     # RESOURCE level, regardless of the driver role's own inline policy. That is
-    # why adding an inline policy during a customer onboarding changed
+    # why adding an inline policy during an earlier customer onboarding changed
     # nothing. intern-shared and jupyter-worker-shared then hang Pending for the
     # full 30-minute helm wait and intern/exec-runner fail to converge.
     #
@@ -961,10 +985,8 @@ resource "aws_efs_file_system" "pavo" {
     "omnistrate.com/managed-by" = "omnistrate"
   }
 
+  # Key change forces a recreate (data loss): existing filesystems keep their key, new ones get the CMK.
   lifecycle {
-    # kms_key_id is ForceNew: a change would replace the filesystem and every
-    # PVC on it. local.efs_kms_key_id only takes effect when a filesystem is
-    # created; an existing one keeps the key it has.
     ignore_changes = [kms_key_id]
   }
 }
@@ -975,6 +997,86 @@ resource "aws_efs_mount_target" "pavo" {
   file_system_id  = aws_efs_file_system.pavo.id
   subnet_id       = each.value
   security_groups = [aws_security_group.efs.id]
+}
+
+# Omnistrate-owned IRSA role the CSI node mounts with (name carries a per-cluster hash).
+# If Omnistrate recreates the role, the policy below still names the old role's
+# unique ID and mounts are denied until the next apply of this module.
+data "kubernetes_service_account_v1" "efs_csi_node" {
+  count = var.efs_iam_auth_enforced ? 1 : 0
+
+  metadata {
+    name      = "efs-csi-node-sa"
+    namespace = "kube-system"
+  }
+
+  lifecycle {
+    postcondition {
+      condition     = try(self.metadata[0].annotations["eks.amazonaws.com/role-arn"], "") != ""
+      error_message = "kube-system/efs-csi-node-sa has no eks.amazonaws.com/role-arn annotation; EFS file system policy cannot name the CSI role."
+    }
+  }
+}
+
+# Mount only over TLS and only through an access point (so the StorageClass
+# uid/gid/directoryPerms always apply). No ClientRootAccess.
+# efs_iam_auth_enforced: only the CSI role may mount; otherwise any client
+# (anonymous, as existing PVs mount) passing the SG.
+data "aws_iam_policy_document" "efs" {
+  statement {
+    sid       = "ClientMount"
+    effect    = "Allow"
+    actions   = ["elasticfilesystem:ClientMount", "elasticfilesystem:ClientWrite"]
+    resources = [aws_efs_file_system.pavo.arn]
+
+    principals {
+      type        = "AWS"
+      identifiers = var.efs_iam_auth_enforced ? [data.kubernetes_service_account_v1.efs_csi_node[0].metadata[0].annotations["eks.amazonaws.com/role-arn"]] : ["*"]
+    }
+  }
+
+  statement {
+    sid       = "DenyNonTls"
+    effect    = "Deny"
+    actions   = ["*"]
+    resources = [aws_efs_file_system.pavo.arn]
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+
+  # Safe while the CSI controller runs with --delete-access-point-root-dir=false
+  # (Omnistrate default); that flag mounts the filesystem root.
+  statement {
+    sid       = "DenyMountWithoutAccessPoint"
+    effect    = "Deny"
+    actions   = ["elasticfilesystem:ClientMount"]
+    resources = [aws_efs_file_system.pavo.arn]
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "elasticfilesystem:AccessPointArn"
+      values   = ["true"]
+    }
+  }
+}
+
+resource "aws_efs_file_system_policy" "pavo" {
+  file_system_id = aws_efs_file_system.pavo.id
+  policy         = data.aws_iam_policy_document.efs.json
 }
 
 # -----------------------------------------------------------------------------
@@ -1028,44 +1130,33 @@ data "aws_iam_policy_document" "pavo_permissions" {
       "s3:DeleteObject",
       "s3:ListBucket",
     ]
-    resources = [
-      aws_s3_bucket.onboarding.arn,
-      "${aws_s3_bucket.onboarding.arn}/*",
-      aws_s3_bucket.intern_data.arn,
-      "${aws_s3_bucket.intern_data.arn}/*",
-    ]
-  }
-
-  # Cell CMK for the application buckets (sse_algorithm = aws:kms). Without
-  # this, PutObject/GetObject fail after the bucket default flips off SSE-S3.
-  # EFS at-rest crypto is the EFS service's; the app never calls KMS for it.
-  statement {
-    effect = "Allow"
-    actions = [
-      "kms:Decrypt",
-      "kms:Encrypt",
-      "kms:GenerateDataKey",
-      "kms:DescribeKey",
-    ]
-    resources = [data.aws_kms_key.cell_cmk.arn]
-    condition {
-      test     = "StringEquals"
-      variable = "kms:ViaService"
-      values   = ["s3.${var.aws_region}.amazonaws.com"]
-    }
+    resources = flatten([
+      for b in aws_s3_bucket.pavo : [b.arn, "${b.arn}/*"]
+    ])
   }
 
   # SNS publish
   statement {
     effect  = "Allow"
     actions = ["sns:Publish"]
-    resources = [
-      aws_sns_topic.data_fetcher.arn,
-      aws_sns_topic.dedup.arn,
+    resources = concat(
+      [for t in aws_sns_topic.pavo : t.arn],
       # connector_sync: the orchestrator dispatcher publishes connector jobs here
       # (attribute-routed to the per-type queues). Without this, dispatch fails AccessDenied.
-      aws_sns_topic.connector_sync.arn,
-    ]
+      [aws_sns_topic.connector_sync.arn],
+    )
+  }
+
+  # Publishing to a topic under the cell key needs these on the key.
+  statement {
+    effect    = "Allow"
+    actions   = ["kms:GenerateDataKey", "kms:Decrypt"]
+    resources = [data.aws_kms_key.cell_cmk.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["sns.${var.aws_region}.amazonaws.com"]
+    }
   }
 
   # SQS receive/delete/visibility
@@ -1078,15 +1169,9 @@ data "aws_iam_policy_document" "pavo_permissions" {
       "sqs:GetQueueAttributes",
     ]
     resources = concat(
-      [
-        aws_sqs_queue.orch.arn,
-        aws_sqs_queue.nugget.arn,
-        aws_sqs_queue.rag.arn,
-        aws_sqs_queue.orch_dlq.arn,
-        aws_sqs_queue.nugget_dlq.arn,
-        aws_sqs_queue.rag_dlq.arn,
-        aws_sqs_queue.connector_sync_dlq.arn,
-      ],
+      [for q in aws_sqs_queue.worker : q.arn],
+      [for q in aws_sqs_queue.worker_dlq : q.arn],
+      [aws_sqs_queue.connector_sync_dlq.arn],
       # connector workers consume their per-type queue; without these the
       # subscriber can't ReceiveMessage and no connector job is ever processed.
       [for q in aws_sqs_queue.connector_sync : q.arn],
@@ -1113,29 +1198,34 @@ data "aws_iam_policy_document" "pavo_permissions" {
       "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-sonnet-4-6",
       "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-4-6-v1",
       "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-opus-4-6-v1",
+      # Opus 5 (2026-10-02): the Multi-Tenant plan's book writer moves to it
+      # (spec bookAgentModel delta in render-multitenant-spec.py). Listed for
+      # both plans so a BYOC cell can follow with a spec change alone.
+      "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-5",
+      "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-opus-5",
+      # Opus 5.5 (2026-10-07): the Multi-Tenant plan's book writer moves to it
+      # once the tribal image that speaks its request contract is live (forced
+      # tool choice 400s, thinking cannot be disabled). Listed for both plans
+      # so a BYOC cell can follow with a spec change alone.
+      "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-5-5",
+      "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-opus-5-5",
       "arn:aws:bedrock:*::foundation-model/amazon.titan-embed-text-v2:0",
     ]
   }
 
-  # RDS IAM auth
-  statement {
-    effect    = "Allow"
-    actions   = ["rds-db:connect"]
-    resources = ["arn:aws:rds-db:${var.aws_region}:${data.aws_caller_identity.current.account_id}:dbuser:${aws_db_instance.postgres.resource_id}/${local.db_username}"]
-  }
-
-  # NOTE: there is deliberately NO `elasticache:Connect` statement here, unlike
-  # the `rds-db:connect` grant above. ElastiCache IAM authentication requires
+  # NOTE: there is deliberately NO `elasticache:Connect` and NO `rds-db:connect`
+  # statement here. ElastiCache IAM authentication requires
   # transit encryption AND an ElastiCache user with AuthenticationMode `iam`.
-  # These replication groups set `transit_encryption_enabled = false` and use
-  # the account's `default` / no-password user with no user groups, so Redis
-  # accepts unauthenticated connections and no client ever signs an
-  # `elasticache:Connect` request. The grant existed from the module's first
-  # commit alongside that same `transit_encryption_enabled = false`, so it was
-  # never functional — it only made Redis access look IAM-gated when the sole
-  # control is `aws_security_group.elasticache`.
-  # Re-add this (and the matching boundary statement in
-  # pavo-bootstrap-aws/policy-statements.json) only when ALL THREE hold:
+  # These replication groups authenticate with an AUTH token (default user, no
+  # user groups), so no client ever signs an `elasticache:Connect` request. The
+  # grant existed from the module's first commit alongside
+  # `transit_encryption_enabled = false`, so it was never functional.
+  # RDS IAM authentication is the same class of dead grant:
+  # `iam_database_authentication_enabled` is not set, and the apps use the
+  # Secrets Manager password. Re-add either grant (and any matching boundary
+  # statement in pavo-bootstrap-aws/policy-statements.json) only when the
+  # corresponding mechanism is actually switched on. For ElastiCache, ALL THREE
+  # must hold:
   #   1. transit_encryption_enabled = true on the replication groups
   #   2. an ElastiCache user with AuthenticationMode `iam`, in a user group
   #      attached to those replication groups
@@ -1147,6 +1237,62 @@ data "aws_iam_policy_document" "pavo_permissions" {
   # is exactly the state that made this grant dead for its whole life.
   # scripts/simulate-policy.py carries the same three-part gate; keep them in
   # step.
+
+  # Lambda MicroVMs computer backend — the sandbox/exec runtime can run on AWS
+  # Lambda MicroVMs instead of E2B. The lifecycle + image-read calls go through
+  # the "lambda:" IAM namespace (the service's signingName is "lambda", NOT
+  # "lambda-microvms"), so without these grants every RunMicrovm/GetMicrovm call
+  # is AccessDenied even though nothing else about the role changes. Scoped to
+  # this account's microvm and microvm-image ARNs. NO image-write actions
+  # (CreateMicrovmImage etc.) — image builds stay in the vendor account.
+  #
+  # UNCONDITIONAL — and it has to stay that way. These statements were gated on
+  # var.enable_lambda_microvms, a per-instance Omnistrate parameter. Every
+  # instance deploy runs an early Terraform phase in which that parameter is
+  # absent, so the gate rendered false, this policy was re-applied WITHOUT the
+  # MicroVM statements, and a later phase put them back. Each deploy therefore
+  # opened a window in which every sandbox on the cell failed AccessDenied on
+  # RunMicrovm — 2026-08-17 09:48Z→11:07Z and 2026-08-18 12:36Z→13:04Z in the
+  # role's CloudTrail PutRolePolicy history. Any gate sourced from a per-instance
+  # value reintroduces that outage; do not add one back.
+  #
+  # The account-level control is the permission boundary attached to
+  # aws_iam_role.pavo below, whose content comes from
+  # pavo-bootstrap-aws/policy-statements.json: in an account whose boundary omits
+  # the MicroVM ceiling these grants cap to nothing (implicit deny, not an
+  # error). Verify against a live role with scripts/verify-microvm-grants.py.
+  statement {
+    effect = "Allow"
+    actions = [
+      "lambda:RunMicrovm",
+      "lambda:GetMicrovm",
+      "lambda:ListMicrovms",
+      "lambda:SuspendMicrovm",
+      "lambda:ResumeMicrovm",
+      "lambda:TerminateMicrovm",
+      "lambda:CreateMicrovmAuthToken",
+      # Read-only microvm-image lookups.
+      "lambda:GetMicrovmImage",
+      "lambda:ListMicrovmImages",
+      "lambda:ListMicrovmImageVersions",
+    ]
+    resources = [
+      "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:microvm*",
+      "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:microvm-image*",
+    ]
+  }
+
+  # RunMicrovm implicitly attaches the INTERNET_EGRESS network connector and the
+  # authorizer checks lambda:PassNetworkConnector against it — but it rejects
+  # EVERY resource-scoped form of that ARN (the implicit connector exposes no
+  # stable account-scoped ARN to name), so this MUST be Resource "*". Without it
+  # RunMicrovm fails AccessDenied on PassNetworkConnector even when the lifecycle
+  # grants above are correct. Unconditional for the same reason as above.
+  statement {
+    effect    = "Allow"
+    actions   = ["lambda:PassNetworkConnector"]
+    resources = ["*"]
+  }
 
   # SES SendEmail for api-gateway transactional email (email_enabled only),
   # scoped to THIS instance's sending identity and its From address.
@@ -1192,7 +1338,9 @@ resource "terraform_data" "bedrock_model_agreements" {
     command     = <<-EOT
       for MODEL_ID in \
         "anthropic.claude-sonnet-4-6" \
-        "anthropic.claude-opus-4-6-v1"; do
+        "anthropic.claude-opus-4-6-v1" \
+        "anthropic.claude-opus-5" \
+        "anthropic.claude-opus-5-5"; do
 
         echo "Enabling Bedrock model: $MODEL_ID in ${var.aws_region}"
 
@@ -1234,21 +1382,107 @@ resource "terraform_data" "bedrock_model_agreements" {
 # -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
-# ExternalSecrets — per-instance ClusterSecretStore + ExternalSecret
+# ExternalSecrets — per-instance SecretStore + ExternalSecret
 # -----------------------------------------------------------------------------
-# The ESO controller itself + the ESO IRSA role + the CRDs all moved to
-# pavo-bootstrap-aws (cell-scoped — one ESO install per cluster). What remains
-# here is the per-instance plumbing: a ClusterSecretStore named for this
-# instance (so multi-tenant clusters don't collide) and the ExternalSecret
-# that syncs the RDS master password into a K8s Secret in the instance
-# namespace.
+# The ESO controller + CRDs are cell-scoped (pavo-bootstrap-aws). Each instance
+# brings its own identity: the `pavo-eso` ServiceAccount in the instance
+# namespace assumes an IRSA role that reads only this instance's RDS master
+# secret(s), and a namespaced SecretStore uses it, so no other namespace can
+# reach these secrets through ESO. The temporal secret grant lives in
+# temporal_self_hosted.tf.
+locals {
+  eso_service_account = "pavo-eso"
+}
 
-resource "kubectl_manifest" "eso_cluster_secret_store" {
+data "aws_iam_policy_document" "eso_trust" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/${var.eks_oidc_provider}"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${var.eks_oidc_provider}:sub"
+      values   = ["system:serviceaccount:${var.instance_id}:${local.eso_service_account}"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${var.eks_oidc_provider}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "eso" {
+  name                 = "pavo-eso-${var.instance_id}"
+  assume_role_policy   = data.aws_iam_policy_document.eso_trust.json
+  permissions_boundary = data.aws_ssm_parameter.permission_boundary_arn.value
+
+  tags = { Name = "pavo-eso-${var.instance_id}" }
+}
+
+data "aws_iam_policy_document" "eso" {
+  statement {
+    sid       = "ReadInstanceRDSSecret"
+    effect    = "Allow"
+    actions   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+    resources = [aws_db_instance.postgres.master_user_secret[0].secret_arn]
+  }
+
+  # The secret is encrypted with the cell CMK; Secrets Manager decrypts on the
+  # caller's behalf.
+  statement {
+    sid       = "DecryptViaSecretsManager"
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = [data.aws_kms_key.cell_cmk.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["secretsmanager.${var.aws_region}.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "eso" {
+  name   = "pavo-eso-read"
+  role   = aws_iam_role.eso.id
+  policy = data.aws_iam_policy_document.eso.json
+}
+
+resource "kubernetes_service_account_v1" "eso" {
+  metadata {
+    name      = local.eso_service_account
+    namespace = var.instance_id
+    annotations = {
+      "eks.amazonaws.com/role-arn" = aws_iam_role.eso.arn
+    }
+  }
+
+  depends_on = [kubectl_manifest.instance_namespace]
+}
+
+# Was the per-instance ClusterSecretStore. moved turns the kind swap into a
+# replace, so the ExternalSecrets' replace_triggered_by on `kind` fires.
+moved {
+  from = kubectl_manifest.eso_cluster_secret_store
+  to   = kubectl_manifest.eso_secret_store
+}
+
+# Ready=True means ESO assumed the role, so the ExternalSecrets that depend on
+# this store are not created before IRSA works.
+resource "kubectl_manifest" "eso_secret_store" {
   yaml_body         = <<-YAML
     apiVersion: external-secrets.io/v1beta1
-    kind: ClusterSecretStore
+    kind: SecretStore
     metadata:
-      name: pavo-aws-sm-${var.instance_id}
+      name: pavo-aws-sm
+      namespace: ${var.instance_id}
     spec:
       provider:
         aws:
@@ -1257,11 +1491,30 @@ resource "kubectl_manifest" "eso_cluster_secret_store" {
           auth:
             jwt:
               serviceAccountRef:
-                name: external-secrets
-                namespace: external-secrets
+                name: ${kubernetes_service_account_v1.eso.metadata[0].name}
   YAML
   server_side_apply = true
   force_conflicts   = true
+
+  wait_for {
+    field {
+      key   = "status.conditions.[0].type"
+      value = "Ready"
+    }
+    field {
+      key   = "status.conditions.[0].status"
+      value = "True"
+    }
+  }
+
+  timeouts {
+    create = "5m"
+  }
+
+  depends_on = [
+    aws_iam_role_policy.eso,
+    kubectl_manifest.instance_namespace,
+  ]
 }
 
 # ExternalSecret syncs username + password from the RDS-managed Secrets Manager
@@ -1291,7 +1544,7 @@ resource "kubectl_manifest" "eso_cluster_secret_store" {
 # So we're back on `kubectl_manifest` with the original SSA-diff-loop guard:
 # `lifecycle { ignore_changes = [yaml_body] }` suppresses the loop where alekc/kubectl
 # sees ESO-controller-mutated fields as drift and tries destroy/recreate every plan
-# (the wedge that hit an internal test instance). Intentional manifest updates require:
+# (the wedge that hit a live instance). Intentional manifest updates require:
 #   terraform apply -replace=kubectl_manifest.external_secret_db_credentials
 resource "kubectl_manifest" "external_secret_db_credentials" {
   yaml_body         = <<-YAML
@@ -1303,8 +1556,8 @@ resource "kubectl_manifest" "external_secret_db_credentials" {
     spec:
       refreshInterval: 5m
       secretStoreRef:
-        name: pavo-aws-sm-${var.instance_id}
-        kind: ClusterSecretStore
+        name: pavo-aws-sm
+        kind: SecretStore
       target:
         name: pavo-rds-db-credentials
         creationPolicy: Owner
@@ -1381,14 +1634,15 @@ resource "kubectl_manifest" "external_secret_db_credentials" {
     #   terraform apply -replace=kubectl_manifest.external_secret_db_credentials
     ignore_changes = [yaml_body]
     # ignore_changes also masks real RDS replacement (address/port/secret_arn)
-    # because yaml_body embeds those values. replace_triggered_by forces this
-    # manifest to be replaced whenever aws_db_instance.postgres replaces, so
-    # the ExternalSecret stays in sync with the live RDS instance.
-    replace_triggered_by = [aws_db_instance.postgres]
+    # and the store kind swap, because yaml_body embeds them. replace_triggered_by
+    # re-creates this manifest when either changes. The replace deletes the
+    # owned K8s Secret until ESO re-syncs it (same values), so pods starting in
+    # that window wait on CreateContainerConfigError; running pods are unaffected.
+    replace_triggered_by = [aws_db_instance.postgres, kubectl_manifest.eso_secret_store.kind]
   }
 
   depends_on = [
-    kubectl_manifest.eso_cluster_secret_store,
+    kubectl_manifest.eso_secret_store,
     kubectl_manifest.instance_namespace,
     aws_db_instance.postgres,
   ]
@@ -1420,6 +1674,10 @@ resource "kubernetes_storage_class_v1" "efs_pavo" {
   reclaim_policy         = "Delete"
   volume_binding_mode    = "Immediate"
   allow_volume_expansion = true
+
+  # `iam` signs the mount with the CSI role so aws_efs_file_system_policy.pavo admits it.
+  # ForceNew; already-bound PVs keep the options they were provisioned with.
+  mount_options = var.efs_iam_auth_enforced ? ["tls", "iam"] : null
 
   parameters = {
     provisioningMode = "efs-ap"
@@ -1520,7 +1778,7 @@ resource "kubernetes_secret_v1" "ghcr_signature_pull" {
 resource "ec_deployment" "onboarding_es" {
   # es_mode = "cloud" (default) provisions Elastic Cloud; "self_hosted" skips it
   # (the in-VPC ECK cluster in elasticsearch_self_hosted.tf serves ES instead).
-  count = var.es_mode == "cloud" ? 1 : 0
+  count = local.effective_es_mode == "cloud" ? 1 : 0
 
   name                   = "pavo-${var.customer_name}-es-${var.instance_id}"
   region                 = "aws-${var.elastic_cloud_region}"
@@ -1548,7 +1806,7 @@ resource "ec_deployment" "onboarding_es" {
 
 # Adding count to the pre-existing ec_deployment changes its address
 # (onboarding_es -> onboarding_es[0]). This keeps already-applied cloud instances
-# mapped to [0] so they are NOT destroyed/recreated on apply.
+# (e.g. a live cloud instance) mapped to [0] so they are NOT destroyed/recreated on apply.
 moved {
   from = ec_deployment.onboarding_es
   to   = ec_deployment.onboarding_es[0]
@@ -1563,7 +1821,7 @@ moved {
 }
 
 resource "elasticstack_elasticsearch_security_api_key" "app_api_key" {
-  count = var.es_mode == "cloud" && var.elasticsearch_api_key == "" ? 1 : 0
+  count = local.effective_es_mode == "cloud" && var.elasticsearch_api_key == "" ? 1 : 0
 
   name = "pavo-es-api-key"
 
@@ -1611,7 +1869,7 @@ resource "random_password" "worker_api_secret" {
 # -----------------------------------------------------------------------------
 # PR #118 (3aacddd) moved the 9 zitadel_* resources out of pavoInfra and into
 # pavo-customer-bootstrap, AND removed the `provider "zitadel" {}` block from
-# providers.tf. Instances created before that change (for example one created
+# providers.tf. Pre-#118 instances (created
 # 2026-05-20) still carry those resources in their pavoInfra terraform state.
 # When pavoInfra plans against that state without a declared zitadel provider,
 # Terraform synthesizes an empty `provider["registry.opentofu.org/zitadel/zitadel"]`
@@ -1633,8 +1891,8 @@ resource "random_password" "worker_api_secret" {
 #
 # Removal: keep these blocks until every pre-#118 pavoInfra state has been
 # planned at least once against this code (state entries get cleared on the
-# first successful plan that processes the `removed` block). After every
-# pre-#118 instance reaches RUNNING on this version, drop these in a
+# first successful plan that processes the `removed` block). After existing
+# instances reach RUNNING on this version, drop these in a
 # cleanup PR. Until then they are no-ops on fresh states.
 # -----------------------------------------------------------------------------
 
@@ -1719,8 +1977,8 @@ removed {
 # destroying the cluster-wide policy resources (now owned by bootstrap).
 #
 # Removal: keep until every pavoInfra state has been planned at least once
-# against this code. Safe to drop in a cleanup PR once every existing instance
-# re-reaches RUNNING on this version.
+# against this code. Safe to drop in a cleanup PR after existing instances
+# re-reach RUNNING on this version.
 # -----------------------------------------------------------------------------
 
 removed {

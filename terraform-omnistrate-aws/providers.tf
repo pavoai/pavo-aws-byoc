@@ -5,7 +5,7 @@
 # resources only:
 #   - RDS PostgreSQL, ElastiCache Redis, S3, SNS+SQS, EFS
 #   - IAM role + IRSA (workload identity)
-#   - per-instance K8s namespace + ExternalSecret + EFS StorageClass
+#   - per-instance K8s namespace + ESO SecretStore/ExternalSecret + EFS StorageClass
 #   - Elastic Cloud deployment + API key
 #
 # All cell-scoped resources (EKS access entry, ESO/Reloader Helm, EBS CSI,

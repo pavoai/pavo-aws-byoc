@@ -14,6 +14,9 @@ StorageClass, Elastic Cloud deployment) on top of:
 
 Runs inside the Omnistrate Terraform runner; state lives in Omnistrate.
 
+Reply we sent on the BYOC security review, mapped to this branch (CMK path):
+[`docs/security-review-response.md`](../docs/security-review-response.md).
+
 ## Bootstrap prerequisites
 
 Two operator-applied modules must run before this one for a given customer +
@@ -22,7 +25,7 @@ cell, in this order:
 1. **`pavo-customer-bootstrap/` once per customer** (Pavo-applied, GCS state).
    Creates all Zitadel resources and emits 15 identity runtime values that
    Pavo ops captures and passes through to this module as instance-create
-   `apiParameters`. See `pavo-customer-bootstrap/README.md`.
+   `apiParameters`. That module is not in this review copy.
 
 2. **`pavo-bootstrap-aws/` once per cell** (customer-applied). Creates
    account-shared IAM boundaries, the cell-scoped EKS access entry (incl. the
@@ -74,9 +77,10 @@ native AWS-provider resources (`aws_eks_access_entry` /
 - `data.aws_ssm_parameter.permission_boundary_arn` — reads `/pavo/shared/permission_boundary_arn` from the bootstrap module's output (the ESO-role and EBS-CSI-boundary params are consumed inside `pavo-bootstrap-aws`, not here)
 - `aws_iam_role.pavo` (app IRSA, with the bootstrap permission boundary attached) + `aws_iam_role.keda_sqs` (KEDA SQS-scaler IRSA). The EBS CSI driver (IRSA role, SA, RBAC) is owned by Omnistrate — neither this module nor `pavo-bootstrap-aws` manages it.
 - `aws_db_instance.postgres` — RDS with `manage_master_user_password = true` (master password lives in customer Secrets Manager, encrypted with `var.cell_kms_key_arn`)
-- Application S3 (`onboarding`, `intern_data`) uses the cell CMK. On EFS, the cell key applies to filesystems created on strict instances: `kms_key_id` comes from `local.efs_kms_key_id`, which is the cell key when `network_posture = "strict"` (fixed at instance creation) and null otherwise, so standard instances get the AWS-managed EFS key. **EFS `kms_key_id` is ForceNew** (a change would replace the filesystem and every PVC on it), so `aws_efs_file_system.pavo` carries `lifecycle { ignore_changes = [kms_key_id] }`: an existing filesystem is never replaced because of its key, whatever key it was created with.
-- All three SNS topics (`data_fetcher`, `dedup`, `connector_sync`) use `alias/aws/sns`, not the cell CMK.
-- `kubectl_manifest.{eso_cluster_secret_store,external_secret_db_credentials}` — per-instance ClusterSecretStore + ExternalSecret that sync the RDS master password into a K8s Secret apps consume via `secretKeyRef`. The ESO controller / Helm release itself is owned by `pavo-bootstrap-aws` (cell-scoped). `external_secret_db_credentials` carries `lifecycle { ignore_changes = [yaml_body], replace_triggered_by = [aws_db_instance.postgres] }` — suppresses the alekc/kubectl SSA-normalization diff loop against ESO-controller-mutated fields, while still forcing replacement when RDS itself replaces so the manifest stays in sync.
+- Encryption at rest: RDS, Redis, SNS, EFS, self-hosted ES snapshots, and Zitadel state use the cell CMK on **new** resources. Existing Redis / SNS / EFS keep their previous key (`lifecycle.ignore_changes`; EFS key change is ForceNew). App S3 (`onboarding`, `data`) is still AES256 (SSE-S3). SQS is SSE-SQS.
+- `network_posture = strict` is the umbrella: Helm `aws-strict-profile` layers override stored portal `$var` (Bedrock-only LLM, empty SaaS/MicroVM keys). OpenTofu `effective_*` in `strict_profile.tf` forces self-hosted ES / Grafana / Temporal / Zitadel.
+- `aws_iam_role.eso` + `kubernetes_service_account_v1.eso` + `kubectl_manifest.{eso_secret_store,external_secret_db_credentials}` — per-instance IRSA role `pavo-eso-<instance_id>` (reads only this instance's RDS master secret(s), decrypts via Secrets Manager on the cell CMK), the `pavo-eso` ServiceAccount it trusts, a namespaced `SecretStore` `pavo-aws-sm` using that ServiceAccount, and the ExternalSecret that syncs the RDS master password into a K8s Secret apps consume via `secretKeyRef`. No other namespace can use the store. The ESO controller / Helm release itself is owned by `pavo-bootstrap-aws` (cell-scoped). `external_secret_db_credentials` carries `lifecycle { ignore_changes = [yaml_body], replace_triggered_by = [aws_db_instance.postgres, kubectl_manifest.eso_secret_store.kind] }` — suppresses the alekc/kubectl SSA-normalization diff loop against ESO-controller-mutated fields, while still forcing replacement when RDS replaces or the store kind changes so the manifest stays in sync.
+  Downgrading an instance past this version needs operator work on the Omnistrate-managed instance state: set `legacy_eso_cell_secret_read = true` and apply `pavo-bootstrap-aws`, downgrade the instance, then replace both ExternalSecrets (`-replace=kubectl_manifest.external_secret_db_credentials -replace='kubectl_manifest.temporal_rds_master_external_secret[0]'`, the latter only with self-hosted Temporal); old versions only re-create them on RDS replace.
 - `time_sleep.wait_for_rds` — gates dependent resources until the RDS instance is ready. (The runner's EKS access entry + `time_sleep.wait_for_eks_access` moved to `pavo-bootstrap-aws`, created once per cell.)
 
 ### Data-store network scoping
@@ -86,18 +90,18 @@ scoped the same way, and the difference is deliberate:
 
 | Security group | Port | Ingress scoped to | Why |
 |---|---|---|---|
-| `aws_security_group.elasticache` | 6379 | **EKS cluster security group** | This SG is the *only* access control on Redis |
-| `aws_security_group.rds` | 5432 | VPC CIDR | Defence in depth — RDS enforces TLS (`rds.force_ssl=1`) and authenticates with a Secrets Manager password |
-| `aws_security_group.efs` | 2049 | VPC CIDR | Defence in depth — EFS is encrypted in transit (the CSI driver enables TLS by default) and authorises via IAM + POSIX |
+| `aws_security_group.elasticache` | 6379 | **EKS cluster security group** | Until `redis_security_phase = enforced` plaintext or token-less clients are accepted, so this SG is the effective control |
+| `aws_security_group.rds` | 5432 | VPC CIDR | Defence in depth — RDS authenticates with a Secrets Manager password |
+| `aws_security_group.efs` | 2049 | **EKS cluster security group** | File system policy denies non-TLS mounts and mounts without an access point (access point pins uid/gid 1000, dir mode 700); with `efs_iam_auth_enforced`, only the EFS CSI driver role may mount (`iam` mount option) |
 
-Redis is scoped tightest because it has nothing else. The replication groups run
-with `transit_encryption_enabled = false` and the account's `default` /
-no-password user, so anything that can reach port 6379 can read and write the
-gateway, intern and onboarding caches in plaintext. Under BYOC the VPC belongs to
-the **customer**, so VPC-CIDR ingress meant every unrelated resource they run
-there could reach it.
+Redis and EFS are scoped to the cluster because, under BYOC, the VPC belongs to the
+**customer**, so VPC-CIDR ingress meant every unrelated resource they run there
+could reach them. Redis accepts plaintext unauthenticated connections until the AUTH
+migration below completes; EFS accepts anonymous (TLS, access-point) mounts unless the
+instance was created with `efs_iam_auth_enforced`.
 
-**This depends on Security Groups for Pods being OFF.** With `ENABLE_POD_ENI=false`
+**The Redis rule depends on Security Groups for Pods being OFF** (EFS does not:
+mounts come from the host-network `efs-csi-node` pods, always on the node ENI). With `ENABLE_POD_ENI=false`
 pods inherit the security groups on the node ENIs, so the cluster security group is
 the correct handle for "traffic from an EKS pod". If that feature is ever enabled,
 pod traffic moves to branch ENIs with their own security groups and this rule stops
@@ -128,7 +132,7 @@ aws ec2 describe-instances \
 #
 # aws:eks:cluster-name is the AWS-reserved tag the EKS service applies. Managed
 # node groups also carry the unprefixed eks:cluster-name (both are present on
-# Pavo's test cell today), but the reserved key is the one guaranteed by the service, so
+# a test cell today), but the reserved key is the one guaranteed by the service, so
 # prefer it — a filter that matches nothing would make the empty-result check
 # above pass while inspecting zero nodes.
 ```
@@ -137,22 +141,39 @@ Custom networking matters as well as pod ENIs: `AWS_VPC_K8S_CNI_CUSTOM_NETWORK_C
 places pods on ENIs built from `ENIConfig` rather than the node's own, which can
 carry a different security group and break this rule the same way.
 
-Narrowing the SG limits **who can reach** Redis; it does not authenticate them.
-Any pod on the cluster still can, and the traffic is still plaintext. Real
-authentication requires transit encryption plus an auth token, which is a staged
-migration across this repo and the app charts:
+### Redis TLS + AUTH
 
-```text
-SG -> TLS preferred -> AUTH ROTATE -> apps to rediss:// + token -> AUTH SET -> TLS required
-```
+TLS and the AUTH token are gated by the per-instance spec parameter
+`redis_security_phase`. Tokens (`random_password.redis_auth`, 64 alphanumeric
+chars) live in Secret `pavo-redis-auth` (keys `gateway`, `intern`, `onboarding`).
+Charts follow the outputs `redis_tls` and `redis_auth_secret_name` via the spec's
+`aws-values` layers and connect with
+`rediss://:<token>@host:port?ssl_check_hostname=true` (redis-py < 6 skips the
+hostname check otherwise). The check needs a DNS name: `*_redis_host_ip` outputs
+are `primary_endpoint_address`, not IPs, despite the name.
 
-Every step except the app roll is infra-only, and each is individually reversible.
-Do not attempt it in one change.
+AWS forbids skipping steps on an existing group (TLS `preferred` before
+`required`; token `ROTATE` before `SET`; no token while TLS is `preferred`), so
+existing instances step one `instance modify` at a time:
+
+| Phase | TLS mode | Token | Pods |
+|---|---|---|---|
+| `off` (default) | off | none | `redis://` |
+| `tls_preferred` | `preferred` | none | `rediss://` |
+| `tls_required` | `required` | `ROTATE` (optional) | `rediss://` + token |
+| `enforced` | `required` | `SET` (required) | `rediss://` + token |
+
+Terraform applies before the charts roll, and each step accepts both the old and
+new pods, so no step drops connections. Enabling TLS moves the primary endpoint to
+`master.*`; the host outputs follow it. New instances are created with `enforced`
+(`scripts/create-aws-instance.sh`). No rollback below `tls_required` once
+`enforced`. No automatic rotation: rotate on demand with `ROTATE`, roll the pods,
+then `SET`.
 
 There is deliberately **no `elasticache:Connect` grant** in the workload IAM
 policy. ElastiCache IAM authentication requires transit encryption *and* a user
-whose `AuthenticationMode` is `iam`; with neither present the action can never be
-signed. The same applies to `rds-db:connect`: `iam_database_authentication_enabled`
+whose `AuthenticationMode` is `iam`; the groups use an AUTH token instead, so the
+action can never be signed. The same applies to `rds-db:connect`: `iam_database_authentication_enabled`
 is not set on the RDS instance, and the apps authenticate with a password from
 Secrets Manager. Re-add either grant only in the change that switches the
 corresponding mechanism on.
@@ -221,7 +242,7 @@ module owns the resource, who applies it, and where state lives.
 |---|---|---|---|---|
 | **Account** | `pavo-bootstrap-aws/` (AWS only) | Customer (AWS creds) | Customer-local | IAM permission boundaries, `/pavo/shared/*` SSM |
 | **Cell** (one EKS cluster) | `pavo-bootstrap-aws/` (AWS only) | Customer (AWS creds) | Customer-local | IngressClass, ClusterIssuer, ESO/Reloader helm releases, EKS access entry, `/pavo/cells/<cluster>/*` SSM |
-| **Customer** (one `customer_name`) | `pavo-customer-bootstrap/` | Pavo ops (Zitadel PAT) | Pavo-owned GCS bucket, prefix `customer-bootstrap/<customer>` | Zitadel org, project, OIDC app, IdPs, login policy |
+| **Customer** (one `customer_name`) | `pavo-customer-bootstrap/` | Pavo ops (Zitadel PAT) | GCS `gs://pavo-terraform-state`, prefix `customer-bootstrap/<customer>` | Zitadel org, project, OIDC app, IdPs, login policy |
 | **Instance** (one Pavo deployment) | `terraform-omnistrate-aws/` (AWS)<br>`terraform-omnistrate-gcp/` (GCP) | Omnistrate runner | Omnistrate-managed | AWS: RDS, ElastiCache, S3, SNS/SQS, EFS, workload IAM role.<br>GCP: Cloud SQL, Memorystore, GCS, Pub/Sub, workload service account.<br>Both: per-instance namespace, app secrets, Elastic Cloud deployment |
 
 Account and Cell scope are AWS-only today: GCP has no cell-bootstrap module, so a
@@ -240,6 +261,7 @@ GCP cell's substrate is not customer-applied. Customer scope is cloud-neutral �
 ### Hard rules
 
 - No cluster-scoped K8s resource may live in a per-instance module, even with `apply_only = true` as a mitigation.
+- Exception: the per-instance file-system StorageClass. Kubernetes has no namespaced StorageClass. AWS `efs-pavo-vpc-<instance_id>` must reference the instance's own EFS file system, which doesn't exist at bootstrap time; GCP `filestore-pavo-vpc-<instance_id>` has no cell-bootstrap module to live in.
 - `pavo-customer-bootstrap/` MUST NOT declare `instance_id` as a variable (structural enforcement of the customer-hostname invariant).
 - A second cell in the same AWS account is currently guarded by an SSM sentinel — see `pavo-bootstrap-aws/README.md`.
 - No fifth "place": Omnistrate cell-amenities are not a home for Pavo infra. Cell-scoped infra a customer should apply/audit in their VPC → `pavo-bootstrap-aws/` (customer-applied), never an amenity (Pavo-applied, no audit trail). The observability stack shipped as an amenity by mistake — now migrated to `enable_observability` in `pavo-bootstrap-aws/` (the old `observability/` amenity module was removed).

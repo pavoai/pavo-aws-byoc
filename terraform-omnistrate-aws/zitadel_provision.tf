@@ -15,10 +15,11 @@
 variable "zitadel_provisioner_image" {
   description = "Digest-pinned zitadel-provisioner image (ghcr.io/pavoai/zitadel-provisioner@sha256:...). Built + cosign-signed + attested (SBOM/vuln/OpenVEX) by the zitadel-provisioner-omnistrate Cloud Build trigger; pin the resulting digest here. See zitadel-provisioner/SIGNING.md."
   type        = string
-  # Digest of the signed zitadel-provisioner image (includes the internal-transport
-  # fix). cosign-signed by cloud-build-zitadel-prov@onboarding-455713, with
-  # SBOM/vuln/OpenVEX attestations attached to the digest; OS scan clean.
-  default = "ghcr.io/pavoai/zitadel-provisioner@sha256:f953dbbc7f98262a9140a1ad0982e2b4d59b75430a518c369ecdae895acb24c0"
+  # Signed OpenTofu build from the zitadel-provisioner-omnistrate-common trigger
+  # (Cloud Build 473ebe03, zero-egress-ecr-workflow@d4503cd). cosign-signed by
+  # cloud-build-zitadel-prov@onboarding-455713 + SBOM/vuln/OpenVEX attestations;
+  # OS scan clean (0 findings).
+  default = "ghcr.io/pavoai/zitadel-provisioner@sha256:29d4197153e4621201537ea72c06631387ac143eb97bd69929a70ad224bc4ef3"
 }
 
 variable "primary_external_identity_provider_automation_enabled" {
@@ -42,13 +43,33 @@ variable "primary_external_identity_provider_client_secret" {
 }
 
 variable "primary_external_identity_provider_oidc_issuer" {
-  description = "self_hosted only: customer IdP OIDC issuer URL (module input). Mutually exclusive with the SAML metadata URL."
+  description = "self_hosted only: customer IdP OIDC issuer URL (module input). Mutually exclusive with SAML metadata (URL or XML). Validation lives in pavo-customer-bootstrap."
   type        = string
   default     = ""
 }
 
 variable "primary_external_identity_provider_saml_metadata_url" {
-  description = "self_hosted only: customer IdP SAML metadata URL (module input). Mutually exclusive with the OIDC issuer."
+  description = "self_hosted only: customer IdP SAML metadata URL (module input). Mutually exclusive with the OIDC issuer and SAML metadata XML. Validation lives in pavo-customer-bootstrap."
+  type        = string
+  default     = ""
+}
+
+variable "primary_external_identity_provider_saml_metadata_xml" {
+  description = "self_hosted only: raw SAML metadata XML for direct Terraform callers. pavoInfra base64encodes this (the one allowed identity transform) before handing it to pavo-customer-bootstrap. When both XML forms are set, xml_base64 wins."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "primary_external_identity_provider_saml_metadata_xml_base64" {
+  description = "self_hosted only: base64-encoded SAML metadata XML (Omnistrate param). Passed through to pavo-customer-bootstrap; decode happens there. When both XML forms are set, this form wins."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "primary_external_identity_provider_saml_attribute_names" {
+  description = "self_hosted only: optional SAML attribute-name overrides for profile prefill (`first_name=<attr>,last_name=<attr>,email=<attr>`). Validation lives in pavo-customer-bootstrap."
   type        = string
   default     = ""
 }
@@ -62,9 +83,24 @@ locals {
   zitadel_frontend_config = "zitadel-frontend-public-config"
   zitadel_internal_url    = "https://zitadel.${local.zitadel_namespace}.svc:8080"
 
+  # Pass-through only. base64encode is the permitted identity transform.
+  # Prefer Omnistrate base64 when both XML forms are supplied. Decode and
+  # OIDC/SAML / URL-vs-XML rejection live in pavo-customer-bootstrap.
+  saml_metadata_xml_base64_effective = (
+    trimspace(var.primary_external_identity_provider_saml_metadata_xml_base64) != "" ?
+    trimspace(var.primary_external_identity_provider_saml_metadata_xml_base64) :
+    (
+      trimspace(var.primary_external_identity_provider_saml_metadata_xml) != "" ?
+      base64encode(var.primary_external_identity_provider_saml_metadata_xml) :
+      ""
+    )
+  )
+
   # Re-run trigger: any change to the identity inputs OR the provisioner image
   # (which bakes all module logic) → new hash → new Job. nonsensitive() un-taints
   # the digest so it can be a resource name (the hash never leaks the inputs).
+  # Effective XML (encoded) is included so metadata updates rerun provisioning
+  # without decoding in pavoInfra.
   zitadel_provision_hash = substr(nonsensitive(sha1(join("|", [
     var.customer_name,
     var.base_domain,
@@ -78,6 +114,8 @@ locals {
     var.primary_external_identity_provider_client_secret,
     var.primary_external_identity_provider_oidc_issuer,
     var.primary_external_identity_provider_saml_metadata_url,
+    local.saml_metadata_xml_base64_effective,
+    var.primary_external_identity_provider_saml_attribute_names,
   ]))), 0, 10)
 }
 
@@ -242,6 +280,19 @@ resource "kubernetes_secret_v1" "zitadel_idp_client_secret" {
   }
 }
 
+# Base64 SAML XML — referenced (not inlined) into the Provision Job env so
+# quotes/newlines never hit the Pod spec. Decode happens in customer-bootstrap.
+resource "kubernetes_secret_v1" "zitadel_idp_saml_metadata" {
+  count = local.zitadel_count
+  metadata {
+    name      = "zitadel-idp-saml-metadata"
+    namespace = local.zitadel_namespace
+  }
+  data = {
+    xml_base64 = local.saml_metadata_xml_base64_effective
+  }
+}
+
 # Provision Job — provisioner (Terraform) initContainer, then the handoff
 # container that materializes the K8s objects api-gateway + frontend consume.
 # -----------------------------------------------------------------------------
@@ -255,6 +306,7 @@ resource "kubernetes_job_v1" "zitadel_provision" {
     aws_iam_role_policy.zitadel_provision,
     aws_s3_bucket_versioning.zitadel_state,
     kubernetes_secret_v1.zitadel_idp_client_secret,
+    kubernetes_secret_v1.zitadel_idp_saml_metadata,
     # Sigstore signaturePullSecret must exist before this Job's (signed,
     # enforce-gated) provisioner image is admitted — else the webhook 401s on
     # the private-ghcr signature fetch and denies the pod.
@@ -308,7 +360,7 @@ resource "kubernetes_job_v1" "zitadel_provision" {
         # --- provision: terraform apply of pavo-customer-bootstrap ------------
         init_container {
           name  = "provision"
-          image = var.zitadel_provisioner_image
+          image = local.image.zitadel_provisioner
 
           # Trust Zitadel's in-VPC serving cert. Zitadel serves a cert-manager
           # self-signed cert (Issuer zitadel-selfsigned); the provider's
@@ -421,6 +473,21 @@ resource "kubernetes_job_v1" "zitadel_provision" {
           env {
             name  = "TF_VAR_primary_external_identity_provider_saml_metadata_url"
             value = var.primary_external_identity_provider_saml_metadata_url
+          }
+          # Deliver XML as base64 (pass-through / base64encode only). The
+          # baked pavo-customer-bootstrap module decodes it.
+          env {
+            name = "TF_VAR_primary_external_identity_provider_saml_metadata_xml_base64"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret_v1.zitadel_idp_saml_metadata[0].metadata[0].name
+                key  = "xml_base64"
+              }
+            }
+          }
+          env {
+            name  = "TF_VAR_primary_external_identity_provider_saml_attribute_names"
+            value = var.primary_external_identity_provider_saml_attribute_names
           }
 
           # OpenTofu writes its data dir (.terraform: provider plugins, backend

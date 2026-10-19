@@ -5,7 +5,7 @@
 # SSE-KMS S3 bucket under the customer CMK, the S3+KMS IAM policy on the snapshot
 # role, and a one-shot idempotent bootstrap Job that registers the repo + SLM.
 # All count-gated on es_mode = "self_hosted" (local.es_count from C2). Validated
-# live on an internal test instance in the Phase 0 spike (snapshot -> restore under the customer
+# live on a test cell in the Phase 0 spike (snapshot -> restore under the customer
 # CMK, _verify passed first try).
 
 locals {
@@ -16,7 +16,7 @@ locals {
   # infra-Job convention; Sigstore policy-controller admits non-ghcr.io/pavoai
   # images). Digest-pinned: this Job runs with ES bootstrap credentials, so
   # pinning prevents an upstream tag move from swapping the trusted executable.
-  es_bootstrap_image = "curlimages/curl:8.10.1@sha256:a73e4b2a41674e127042302efd0c237a44b029ca616d640945597666cddf53ca"
+  es_bootstrap_image = local.image.curl
 
   # Repo register + _verify + SLM. Shell vars ($USER/$PASS/$ES_URL/$SNAPSHOT_BUCKET)
   # come from the container env; the until-loop also rides out the file-realm

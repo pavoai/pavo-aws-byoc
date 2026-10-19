@@ -4,7 +4,9 @@
 *.tfvars
 backend.tf
 
-# Per-cell tfvars under cells/ are re-included one by one in cells/.gitignore.
+# Per-cell tfvars under cells/ are tracked in the private repo only (`cells/`
+# is excluded from the public mirror). Allow-list each file explicitly with
+# `git add -f`; do not add a broad `!cells/**/*.tfvars`.
 
 # NOTE: .terraform.lock.hcl IS committed for this root module. pavo-bootstrap-aws
 # is a customer-applied root module distributed as a release artefact via the

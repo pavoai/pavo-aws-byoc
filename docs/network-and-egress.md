@@ -24,9 +24,10 @@ Pods can reach the internet through your NAT gateway. The deployment contacts:
 
 | Destination | Why | Controlled by |
 |---|---|---|
-| `ghcr.io` | Pavo container images and their signatures | always |
+| Artifact-plane ECR (same digest as `ghcr.io/pavoai/*`) | Runtime image pull. Cloud Build still signs at GHCR; `Publish Artifact Plane` copies the digest | always |
+| `ghcr.io` | Cosign signatures / attestations at admission (`pavo-ghcr-signature-pull`) | always |
 | Sigstore (`fulcio.sigstore.dev`, Rekor) | Signature verification at admission | always |
-| Public Helm chart repositories | Add-on charts at install and upgrade time: External Secrets, Stakater, Sigstore, Elastic, Temporal, and the Prometheus, Grafana and OpenTelemetry charts | stage 1 and 2 applies |
+| Public Helm chart repositories | Add-on charts only if artifact-plane pins are omitted. Stage 1 Helm pins `mirrored-images.json` | stage 1 and 2 applies |
 | Terraform registry | Provider downloads by the Omnistrate runner | standard posture only |
 | Let's Encrypt | Public TLS certificates for the ingress | always in standard |
 | Elastic Cloud | Search, when `es_mode = "cloud"` | `es_mode` |
@@ -59,9 +60,19 @@ internet and the instance metadata service are denied.
   cell's private CA instead of Let's Encrypt.
 - **Terraform providers:** the Omnistrate runner installs them only from the
   cell's in-account S3 mirror, over the gateway endpoint.
+- **Umbrella:** `network_posture = "strict"` is the single control. Helm
+  `aws-strict-profile` layers override stored portal values on every render
+  (Bedrock-only LLM, empty OpenAI / Langfuse / HubSpot / MicroVM keys).
+  OpenTofu `effective_*` in `strict_profile.tf` keeps ES / Grafana / Temporal
+  / Zitadel self-hosted even if those parameters later change. Flipping the
+  four hosting flags to `cloud` on a live strict instance fails plan instead
+  of migrating data.
 - **Prerequisites:** a strict instance fails at plan time unless the cell has
   the private CA and NetworkPolicy enforcement ready
   (`/pavo/cells/<cluster>/private_ca_ready` and `network_policy_ready`).
+- **Images:** nodes pull from artifact-plane ECR over PrivateLink. ClusterImagePolicy
+  still covers `ghcr.io/pavoai/**`. Non-Pavo images (ESO, ECK, Reloader, …)
+  are digest-pinned ECR copies with `no-match-policy = allow`.
 - **Not covered yet:** the public DNS record isn't suppressed in all
   configurations; see the `network_posture` description in
   `terraform-omnistrate-aws/variables.tf`.

@@ -4,8 +4,8 @@
 # Materializes ONLY when es_mode = "self_hosted". Default es_mode = "cloud"
 # (Elastic Cloud via ec_deployment) is completely unchanged — every resource
 # here is count-gated, so this file is purely additive and touches nothing on
-# the existing cloud path. Validated end-to-end on an internal test instance in
-# the Phase 0 spike.
+# the existing cloud path. Validated end-to-end on a live cell in the
+# Phase 0 spike.
 #
 # C2 (this file) — the cluster + its identity:
 #   - CMK gp3 StorageClass (EBS at rest under the customer CMK)
@@ -22,7 +22,7 @@
 # data volume to actually provision. Both are deploy-time deps, not code deps.
 
 locals {
-  es_self_hosted = var.es_mode == "self_hosted"
+  es_self_hosted = local.effective_es_mode == "self_hosted"
   es_count       = local.es_self_hosted ? 1 : 0
 
   es_name      = "pavo-es"
@@ -275,8 +275,9 @@ resource "kubectl_manifest" "elasticsearch" {
       name      = local.es_name
       namespace = local.es_namespace
     }
-    spec = {
+    spec = merge({
       version = local.es_version
+      image   = local.image.elasticsearch
       auth = {
         fileRealm = [for name in keys(local.es_file_realm_users) : { secretName = name }]
         roles     = [{ secretName = "es-app-roles" }]
@@ -333,7 +334,7 @@ resource "kubectl_manifest" "elasticsearch" {
           }
         }]
       }]
-    }
+    })
   })
 
   server_side_apply = true
@@ -437,8 +438,9 @@ resource "kubectl_manifest" "kibana" {
       name      = local.kibana_name
       namespace = local.es_namespace
     }
-    spec = {
+    spec = merge({
       version          = local.es_version
+      image            = local.image.kibana
       count            = 1
       elasticsearchRef = { name = local.es_name }
       http = {
@@ -465,7 +467,7 @@ resource "kubectl_manifest" "kibana" {
           }]
         }
       }
-    }
+    })
   })
 
   server_side_apply = true
@@ -490,7 +492,7 @@ resource "kubectl_manifest" "kibana_ingress" {
       name      = "kibana"
       namespace = local.es_namespace
       annotations = {
-        "cert-manager.io/cluster-issuer" = "pavo-letsencrypt-prod"
+        "cert-manager.io/cluster-issuer" = local.ingress_cluster_issuer
       }
     }
     spec = {
@@ -536,6 +538,8 @@ resource "kubectl_manifest" "es_exporter" {
       name      = "pavo-es-exporter"
       namespace = local.es_namespace
       labels    = { "pavo.ai/es-client" = "true" }
+      # --es.ca is read once at start; ECK regenerates this CA yearly.
+      annotations = { "secret.reloader.stakater.com/reload" = "${local.es_name}-es-http-certs-public" }
     }
     spec = {
       replicas = 1
@@ -551,7 +555,7 @@ resource "kubectl_manifest" "es_exporter" {
         spec = {
           containers = [{
             name  = "exporter"
-            image = "quay.io/prometheuscommunity/elasticsearch-exporter:v1.7.0"
+            image = local.image.es_exporter
             args = [
               "--es.uri=https://${local.es_name}-es-http.${local.es_namespace}.svc:9200",
               # TLS verification is ON by default (skip-verify defaults to false) and

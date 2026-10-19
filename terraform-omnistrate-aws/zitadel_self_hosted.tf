@@ -7,7 +7,7 @@
 # local.zitadel_count, so this file is purely additive and touches nothing on
 # the existing cloud path.
 #
-# Steps implemented here (all live-validated on an internal test instance via throwaway spikes):
+# Steps implemented here (all live-validated on a test cell via throwaway spikes):
 #   Step 1 — flag gate + resolved auth host + in-cluster secrets (masterkey +
 #            zitadel DB password, ESO generate-once, never in TF state).
 #   Step 2 — `zitadel-db-credentials` (DB + least-priv role created by
@@ -27,7 +27,7 @@
 # part of the prod/strict follow-up, not this DEV foundation.
 
 locals {
-  zitadel_self_hosted = var.zitadel_mode == "self_hosted"
+  zitadel_self_hosted = local.effective_zitadel_mode == "self_hosted"
   zitadel_count       = local.zitadel_self_hosted ? 1 : 0
 
   zitadel_namespace = var.instance_id
@@ -242,9 +242,9 @@ resource "kubectl_manifest" "zitadel_db_credentials_external_secret" {
 # -----------------------------------------------------------------------------
 locals {
   # Zitadel v2.71.19 (multi-arch index digest).
-  zitadel_image = "ghcr.io/zitadel/zitadel@sha256:32834d46240c5ece9f86c5e5f706b167c2064fba76bbf9213e3494023c38ca5d"
+  zitadel_image = local.image.zitadel
   # alpine/k8s 1.31.0 — kubectl + shell, for the key-persist step.
-  zitadel_kubectl_image      = "docker.io/alpine/k8s@sha256:66dd3f7db6c4cf152b688d83aad11ceed9eb2da0c4e7de1034c7d4ccea1b55ef"
+  zitadel_kubectl_image      = local.image.alpine_k8s
   zitadel_replicas           = 2
   zitadel_provisioner_secret = "zitadel-provisioner-credential"
 
@@ -522,8 +522,9 @@ resource "kubernetes_job_v1" "zitadel_setup" {
 
 # Internal TLS (F10): a cert-manager self-signed Issuer mints the cert Zitadel
 # serves on :8080, so every in-cluster caller connects over real HTTPS (no XFP
-# spoofing, no proxy sidecar). In-cluster callers skip-verify this cert; the
-# public browser path is fronted by the LE cert on the Ingress. Key never enters
+# spoofing, no proxy sidecar). The provisioner Job verifies it against this
+# Secret's ca.crt; other in-cluster callers skip-verify. The public browser path
+# is fronted by the LE cert on the Ingress. Key never enters
 # TF state; auto-renewed by cert-manager.
 resource "kubectl_manifest" "zitadel_selfsigned_issuer" {
   count = local.zitadel_count
@@ -597,6 +598,12 @@ resource "kubernetes_deployment_v1" "zitadel" {
     name      = "zitadel"
     namespace = local.zitadel_namespace
     labels    = local.zitadel_labels
+    annotations = {
+      # Zitadel loads its serving cert at start. Without a restart on renewal it
+      # keeps serving the old cert while the provisioner trusts the new one, and
+      # every pavoInfra apply fails at zitadel_provision.
+      "secret.reloader.stakater.com/reload" = "zitadel-internal-tls"
+    }
   }
 
   spec {
@@ -769,14 +776,14 @@ resource "kubernetes_service_v1" "zitadel" {
 
 # Ingress — public browser/OIDC path only (the gRPC management API + api-gateway
 # OIDC calls use the internal ClusterIP svc, not this ingress). pavo-nginx +
-# Let's Encrypt (both cell-scoped, from pavo-bootstrap-aws).
+# local.ingress_cluster_issuer (both cell-scoped, from pavo-bootstrap-aws).
 resource "kubernetes_ingress_v1" "zitadel" {
   count = local.zitadel_count
   metadata {
     name      = "zitadel"
     namespace = local.zitadel_namespace
     annotations = {
-      "cert-manager.io/cluster-issuer" = "pavo-letsencrypt-prod"
+      "cert-manager.io/cluster-issuer" = local.ingress_cluster_issuer
       # Zitadel serves HTTPS internally (F10) — nginx must re-encrypt to the
       # backend. proxy_ssl_verify is off by default, so the self-signed backend
       # cert is accepted.

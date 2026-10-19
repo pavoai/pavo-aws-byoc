@@ -27,12 +27,16 @@ from `/pavo/shared/permission_boundary_arn` in SSM and fails without it.
 - **Cluster add-ons (Helm):** External Secrets Operator, Stakater Reloader, the
   Sigstore policy controller, and optionally the ECK operator
   (`enable_eck`) and an in-VPC observability stack (`enable_observability`).
-- **Kubernetes objects:** the `pd-balanced` storage class (on the cell key with `pd_balanced_use_cell_key`; plus `gp3-cmk`,
+- **Kubernetes objects:** the `pd-balanced` storage class (plus `gp3-cmk`,
   backed by the cell key, with `enable_observability`), the
   `pavo-nginx` ingress class, a Let's Encrypt cluster issuer, optionally a
   private CA (`install_private_ca`), and the image-signature policies.
 - **Networking:** S3 and DynamoDB gateway endpoints, only for route tables the
-  existing endpoints don't already cover.
+  existing endpoints don't already cover. Interface VPC endpoints for the AWS
+  APIs instance tofu refreshes on plan (KMS, Secrets Manager, IAM, RDS,
+  ElastiCache, SNS, SQS, EFS, SES) so a no-NAT cell can plan. Helm and
+  in-VPC observability images are pinned from `mirrored-images.json`
+  (artifact-plane ECR).
 - **Other:** SSM parameters under `/pavo/shared/` and `/pavo/cells/<cluster>/`,
   including a one-cell-per-account guard, and an S3 bucket used as a
   Terraform provider mirror for strict cells.

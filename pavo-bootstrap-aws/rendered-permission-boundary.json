@@ -75,10 +75,24 @@
       }
     },
     {
+      "Sid": "SESSendFromNoreply",
+      "Effect": "Allow",
+      "Action": [
+        "ses:SendEmail"
+      ],
+      "Resource": [
+        "arn:aws:ses:*:*:identity/*"
+      ],
+      "Condition": {
+        "StringLike": {
+          "ses:FromAddress": "noreply@*"
+        }
+      }
+    },
+    {
       "Sid": "SESMutatingTaggedPavoIdentities",
       "Effect": "Allow",
       "Action": [
-        "ses:SendEmail",
         "ses:DeleteEmailIdentity",
         "ses:GetEmailIdentity",
         "ses:ListTagsForResource",
@@ -143,6 +157,10 @@
         "arn:aws:bedrock:*:*:inference-profile/us.anthropic.claude-sonnet-4-6",
         "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-4-6-v1",
         "arn:aws:bedrock:*:*:inference-profile/us.anthropic.claude-opus-4-6-v1",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-5",
+        "arn:aws:bedrock:*:*:inference-profile/us.anthropic.claude-opus-5",
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-5-5",
+        "arn:aws:bedrock:*:*:inference-profile/us.anthropic.claude-opus-5-5",
         "arn:aws:bedrock:*::foundation-model/amazon.titan-embed-text-v2:0"
       ]
     },
@@ -246,7 +264,8 @@
             "secretsmanager.*.amazonaws.com",
             "elasticache.*.amazonaws.com",
             "elasticfilesystem.*.amazonaws.com",
-            "s3.*.amazonaws.com"
+            "s3.*.amazonaws.com",
+            "sns.*.amazonaws.com"
           ]
         }
       }

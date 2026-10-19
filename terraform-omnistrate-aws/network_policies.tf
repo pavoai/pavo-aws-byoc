@@ -13,7 +13,7 @@
 # governed here — they carry their own policies or are control-plane exceptions.
 # So "default-deny egress" here means namespace-scoped, NOT cell-wide; say it that
 # way to customers. A cell-wide posture additionally needs the cosign admission
-# path off public Sigstore (an offline-verification design, not yet built) and an egress path for
+# path off public Sigstore (see COSIGN-OFFLINE-SPIKE.md) and an egress path for
 # the alert forwarder, neither of which is in this change.
 # Ingress isolation is deliberately out of scope (this is external-egress default
 # deny / a VPC-contained posture, not east-west microsegmentation).
@@ -131,7 +131,7 @@ resource "kubectl_manifest" "strict_egress" {
         # VPC CNI this also covers DNS and same-namespace pod-to-pod, since pod
         # IPs are VPC IPs — a separate kube-system/podSelector rule would be dead
         # weight. The one case it does NOT cover is a NodeLocal DNS cache, which
-        # answers on a link-local address: the validation run reads /etc/resolv.conf in a
+        # answers on a link-local address: a live cell reads /etc/resolv.conf in a
         # strict pod and, if a node-local resolver is in use, adds exactly that
         # /32 here (never a broad link-local exception, which would reopen IMDS
         # 169.254.169.254).

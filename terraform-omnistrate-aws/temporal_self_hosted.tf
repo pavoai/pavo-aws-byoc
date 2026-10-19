@@ -38,7 +38,7 @@
 # digests.
 
 locals {
-  temporal_self_hosted = var.temporal_mode == "self_hosted"
+  temporal_self_hosted = local.effective_temporal_mode == "self_hosted"
   temporal_count       = local.temporal_self_hosted ? 1 : 0
 
   temporal_namespace_k8s = var.instance_id
@@ -55,6 +55,10 @@ locals {
   temporal_frontend_port    = 7233
 
   temporal_web_host = "temporal.${var.customer_name}.${var.base_domain}"
+  # tofu helm_release runs in the customer VPC. S3 gateway VPCE is same-region
+  # only, so the Temporal chart comes from the cell-region provider-mirror bucket
+  # (not go.temporal.io, and not Omnistrate chartRepoURL).
+  temporal_chart_repository = "https://pavo-tf-provider-mirror-493807289773-${var.aws_region}.s3.${var.aws_region}.amazonaws.com/helm"
 
   # Codec sidecar (Web UI payload decode) only when the customer key is set AND
   # an intern codec image was pinned. Off = UI shows encoded payloads (codec is
@@ -67,16 +71,15 @@ locals {
 
   # --- images (digest pins == upstream Docker Hub digests, copy-preserved) ---
   # temporalio/server 1.31.2 (chart 1.6.0 appVersion)
-  temporal_server_image_repo = "ghcr.io/pavoai/mirror/temporalio/server"
+  temporal_server_image_repo = local.image.temporal_server
   temporal_server_image_tag  = "1.31.2@sha256:b5ecdb8282bededae2a10c36e8d862e27d0bc2d247fc73c5416025997ab4a1da"
   # temporalio/admin-tools 1.31.2 — temporal-sql-tool + temporal CLI (Jobs)
-  temporal_admin_tools_image_repo = "ghcr.io/pavoai/mirror/temporalio/admin-tools"
+  temporal_admin_tools_image_repo = local.image.temporal_admin
   temporal_admin_tools_image_tag  = "1.31.2@sha256:dbc5fcd6ee8f0f4d808bf765af9a87dea9d8a283abfdcfbd2fc148496ba66107"
   temporal_admin_tools_image      = "${local.temporal_admin_tools_image_repo}:${local.temporal_admin_tools_image_tag}"
   # temporalio/ui 2.53.0
-  temporal_ui_image = "ghcr.io/pavoai/mirror/temporalio/ui:2.53.0@sha256:810eba47f77a89b0e64e2e751478ca585d037bbd90c0951a2974a92a6c5adeb9"
-  # nginx auth sidecar — public.ecr.aws (unlimited anonymous, postgres precedent)
-  temporal_nginx_image = "public.ecr.aws/nginx/nginx:1.29-alpine@sha256:72c9b856fee09b02f9e5ee29ab2b55ae9a3c3b59cf094baef1d05f5914d8cb17"
+  temporal_ui_image    = local.image.temporal_ui
+  temporal_nginx_image = local.image.nginx
 
   # Same amd64 workload-nodegroup pin as the zitadel stack: keeps Temporal off
   # the small arm64 system nodes, and the (amd64-only) intern codec image needs
@@ -152,7 +155,7 @@ resource "terraform_data" "temporal_mode_guard" {
 
   lifecycle {
     precondition {
-      condition     = var.grafana_mode == "self_hosted"
+      condition     = local.effective_grafana_mode == "self_hosted"
       error_message = "temporal_mode=self_hosted requires grafana_mode=self_hosted: the in-VPC Prometheus is what scrapes the Temporal server; without it the cluster runs blind (and Grafana Cloud egress would defeat the residency goal)."
     }
   }
@@ -185,6 +188,9 @@ resource "aws_db_instance" "temporal" {
   db_subnet_group_name   = aws_db_subnet_group.pavo.name
   vpc_security_group_ids = [aws_security_group.rds.id]
 
+  # Pinned with local.rds_root_ca; change both together.
+  ca_cert_identifier = "rds-ca-rsa2048-g1"
+
   multi_az                  = true
   publicly_accessible       = false
   deletion_protection       = var.rds_deletion_protection
@@ -213,6 +219,39 @@ resource "time_sleep" "wait_for_temporal_rds" {
   create_duration = "120s"
 }
 
+# The instance ESO role (main.tf) reads this RDS master secret too. Separate
+# policy so the postgres SecretStore/ExternalSecret don't wait on this RDS.
+data "aws_iam_policy_document" "eso_temporal" {
+  count = local.temporal_count
+
+  statement {
+    sid       = "ReadTemporalRDSSecret"
+    effect    = "Allow"
+    actions   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+    resources = [aws_db_instance.temporal[0].master_user_secret[0].secret_arn]
+  }
+
+  statement {
+    sid       = "DecryptTemporalViaSecretsManager"
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = [data.aws_kms_key.cell_cmk.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["secretsmanager.${var.aws_region}.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "eso_temporal" {
+  count = local.temporal_count
+
+  name   = "pavo-eso-read-temporal"
+  role   = aws_iam_role.eso.id
+  policy = data.aws_iam_policy_document.eso_temporal[0].json
+}
+
 # Master creds → K8s Secret (bootstrap Job only; runtime never sees them).
 # Same alekc/kubectl SSA-drift guard as external_secret_db_credentials.
 resource "kubectl_manifest" "temporal_rds_master_external_secret" {
@@ -228,8 +267,8 @@ resource "kubectl_manifest" "temporal_rds_master_external_secret" {
     spec = {
       refreshInterval = "5m"
       secretStoreRef = {
-        name = "pavo-aws-sm-${var.instance_id}"
-        kind = "ClusterSecretStore"
+        name = "pavo-aws-sm"
+        kind = "SecretStore"
       }
       target = {
         name           = local.temporal_rds_master_secret
@@ -268,15 +307,16 @@ resource "kubectl_manifest" "temporal_rds_master_external_secret" {
   }
   lifecycle {
     ignore_changes       = [yaml_body]
-    replace_triggered_by = [aws_db_instance.temporal[0]]
+    replace_triggered_by = [aws_db_instance.temporal[0], kubectl_manifest.eso_secret_store.kind]
   }
   depends_on = [
-    kubectl_manifest.eso_cluster_secret_store,
+    kubectl_manifest.eso_secret_store,
+    aws_iam_role_policy.eso_temporal,
     kubectl_manifest.instance_namespace,
   ]
 }
 
-# RDS CA trust anchor — the pinned AWS global bundle embedded as a .tf literal
+# RDS CA trust anchor — the pinned regional root embedded as a .tf literal
 # (see temporal_rds_ca_bundle.tf for why it can be neither a repo data file nor
 # a plan-time fetch). Every SQL client (bootstrap psql, temporal-sql-tool,
 # server datastores) mounts this and verifies the RDS hostname — TLS without
@@ -290,7 +330,7 @@ resource "kubernetes_config_map_v1" "temporal_rds_ca" {
   }
 
   data = {
-    "rds-ca.pem" = local.rds_global_ca_bundle
+    "rds-ca.pem" = local.rds_root_ca[var.aws_region]
   }
 
   depends_on = [kubectl_manifest.instance_namespace]
@@ -710,7 +750,7 @@ resource "kubernetes_job_v1" "temporal_db_bootstrap" {
 
         container {
           name    = "psql"
-          image   = "public.ecr.aws/docker/library/postgres:16-alpine"
+          image   = local.image.postgres_16_alpine
           command = ["/bin/sh", "-c"]
           args = [<<-EOT
             set -eu
@@ -942,7 +982,7 @@ resource "helm_release" "temporal" {
   count = local.temporal_count
 
   name       = "temporal"
-  repository = "https://go.temporal.io/helm-charts"
+  repository = local.temporal_chart_repository
   chart      = "temporal"
   version    = "1.6.0"
   namespace  = local.temporal_namespace_k8s
@@ -1516,7 +1556,7 @@ resource "kubernetes_deployment_v1" "temporal_web" {
           for_each = local.temporal_codec_enabled ? [1] : []
           content {
             name    = "codec"
-            image   = var.temporal_codec_image
+            image   = local.image.temporal_codec
             command = ["python", "-m", "temporal.codec.server"]
             env {
               name  = "CODEC_SERVER_HOST"
@@ -1618,7 +1658,7 @@ resource "kubernetes_ingress_v1" "temporal_web" {
     name      = "temporal-web"
     namespace = local.temporal_namespace_k8s
     annotations = {
-      "cert-manager.io/cluster-issuer" = "pavo-letsencrypt-prod"
+      "cert-manager.io/cluster-issuer" = local.ingress_cluster_issuer
       # Match the sidecar's client_max_body_size for /codec decode POSTs.
       "nginx.ingress.kubernetes.io/proxy-body-size" = "8m"
     }
