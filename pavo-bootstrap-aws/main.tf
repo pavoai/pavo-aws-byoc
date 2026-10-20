@@ -490,6 +490,34 @@ resource "aws_ssm_parameter" "network_policy_ready" {
   depends_on = [aws_ssm_parameter.single_cell_guard]
 }
 
+# connector_assumable_role_arns / strict_egress_extra_destinations (cell -> instance):
+# customer-supplied VALUES, not readiness markers. The per-instance module renders
+# them into the workload role's sts:AssumeRole statement and the strict egress
+# NetworkPolicy. Published here instead of passed as Omnistrate instance
+# parameters because an early phase of every instance deploy renders WITHOUT
+# instance parameters (see the variables). JSON in a String parameter, not a
+# StringList: an IAM role name may itself contain a comma. Empty input, no
+# parameter, and the instance renders nothing extra.
+resource "aws_ssm_parameter" "connector_assumable_role_arns" {
+  count = length(var.connector_assumable_role_arns) > 0 ? 1 : 0
+
+  name  = "/pavo/cells/${local.eks_cluster_name}/connector_assumable_role_arns"
+  type  = "String"
+  value = jsonencode(var.connector_assumable_role_arns)
+
+  depends_on = [aws_ssm_parameter.single_cell_guard]
+}
+
+resource "aws_ssm_parameter" "strict_egress_extra_destinations" {
+  count = length(var.strict_egress_extra_destinations) > 0 ? 1 : 0
+
+  name  = "/pavo/cells/${local.eks_cluster_name}/strict_egress_extra_destinations"
+  type  = "String"
+  value = jsonencode(var.strict_egress_extra_destinations)
+
+  depends_on = [aws_ssm_parameter.single_cell_guard]
+}
+
 # observability_ready (cell -> instance): the second half of the same cell->instance
 # SSM "API" as eck_ready, and it means something deliberately weaker.
 #

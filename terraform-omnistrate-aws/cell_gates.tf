@@ -17,11 +17,18 @@
 # SecureString values returned by this data source land in plain Terraform state.
 # recursive = false keeps the read to the cell's direct children.
 #
-# The count is the UNION of every gate below — an instance with
-# grafana_mode = self_hosted but es_mode = cloud still needs the listing. Add new
-# gates here rather than adding a second listing elsewhere.
+# Read on EVERY instance (count = 1). It used to be the union of the readiness
+# gates below, all derived from instance parameters, but the connector values at
+# the bottom of this file render IAM and the strict egress policy and must not
+# depend on instance parameters: an early phase of every deploy renders without
+# them (0b5f9db: a grant gated on instance parameters was revoked for 79 and 28
+# minutes that way). The read is covered by the shared SSMRead statement on
+# /pavo/* in pavo-bootstrap-aws/policy-statements.json, the same grant
+# data.aws_ssm_parameter.permission_boundary_arn already needs on every
+# instance. A path with no parameters returns an empty listing, not an error.
+# Add new gates here rather than adding a second listing elsewhere.
 data "aws_ssm_parameters_by_path" "cell" {
-  count           = max(local.es_count, local.obs_gate_count, local.strict_count)
+  count           = 1
   path            = "/pavo/cells/${var.eks_cluster_name}"
   recursive       = false
   with_decryption = false
@@ -44,4 +51,37 @@ locals {
   observability_ready_present  = contains(local.cell_param_names, local.observability_ready_name)
   private_ca_ready_present     = contains(local.cell_param_names, local.private_ca_ready_name)
   network_policy_ready_present = contains(local.cell_param_names, local.network_policy_ready_name)
+}
+
+# Connector values (cell -> instance). Unlike the readiness markers above these
+# carry VALUES: pavo-bootstrap-aws publishes them as JSON in String parameters
+# from customer-supplied inputs (connector_assumable_role_arns,
+# strict_egress_extra_destinations). Absent parameter = nothing extra.
+#
+# The provider always marks `values` sensitive (the listing could hold
+# SecureString ciphertext). These two are non-secret ARNs and CIDRs, and they
+# have to be readable in the rendered IAM policy and NetworkPolicy, so they are
+# unmarked. try(nonsensitive(x), x) rather than nonsensitive(x): the fallback
+# "[]" is not sensitive and nonsensitive() rejects an unmarked value. A
+# malformed value fails jsondecode loudly instead of silently granting nothing.
+locals {
+  _cell_param_values = try(zipmap(
+    data.aws_ssm_parameters_by_path.cell[0].names,
+    data.aws_ssm_parameters_by_path.cell[0].values,
+  ), {})
+
+  connector_assumable_role_arns_name    = "/pavo/cells/${var.eks_cluster_name}/connector_assumable_role_arns"
+  strict_egress_extra_destinations_name = "/pavo/cells/${var.eks_cluster_name}/strict_egress_extra_destinations"
+
+  _connector_assumable_role_arns_json    = try(local._cell_param_values[local.connector_assumable_role_arns_name], "[]")
+  _strict_egress_extra_destinations_json = try(local._cell_param_values[local.strict_egress_extra_destinations_name], "[]")
+
+  connector_assumable_role_arns = jsondecode(try(
+    nonsensitive(local._connector_assumable_role_arns_json),
+    local._connector_assumable_role_arns_json,
+  ))
+  strict_egress_extra_destinations = jsondecode(try(
+    nonsensitive(local._strict_egress_extra_destinations_json),
+    local._strict_egress_extra_destinations_json,
+  ))
 }

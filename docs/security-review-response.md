@@ -118,7 +118,8 @@ this branch.
 
 `cell_kms_key_arn` is required. New resources use it. Existing Redis / SNS /
 EFS keep their current key (`ignore_changes`) so we do not recreate live data
-stores.
+stores. After they chose CMK everywhere, app S3, SQS, the node EBS default,
+and the stage-1 state bucket moved onto that key as well.
 
 | Store | New instance | Existing instance |
 |---|---|---|
@@ -128,10 +129,12 @@ stores.
 | ElastiCache Redis | Cell CMK | Keep previous key |
 | SNS topics | Cell CMK | Keep previous key |
 | EFS | Cell CMK, **all postures** (not strict-only) | Keep previous key (ForceNew if you change it) |
-| App S3 (`onboarding`, `data`) | **Still AES256 (SSE-S3)** | Same |
-| SQS | SSE-SQS | Same |
+| App S3 (`onboarding`, `data`) | Cell CMK (new objects) | Existing objects stay SSE-S3 until rewritten |
+| SQS (worker + connector_sync) | Cell CMK | Cell CMK |
+| Node EBS default / keyless gp3 | Cell CMK (account+region default) | Existing volumes keep their key until replaced |
+| Stage 1 TF state bucket | Cell CMK when `create-state-backend.sh` is passed the key | Re-run the script with the CMK |
 
-App S3 on the cell CMK was never in the reply. It is still SSE-S3.
+The provider-mirror bucket stays SSE-S3 (public OpenTofu providers, not customer data).
 
 ### In transit / auth — agreed items
 
@@ -173,34 +176,38 @@ state) outside the customer account. Teardown of that copy is §7.
 
 ## 5. Third-party container image verification
 
-**Reply:** Clarification. Pavo images are in the verification path. Non-Pavo
-images are digest-pinned and copied into ECR for the private cell; we will
-not add ClusterImagePolicies for them mid-POC. They can be verified once, as
-agreed.
+**Reply:** Clarification. The 1 Oct package said signatures are enforced.
+That is how the policies are **written** (`ghcr.io/pavoai/<svc>*`,
+`image_policy_mode = enforce`). A private cell does **not** pull those names,
+so that check does not run on the images the pods actually start.
 
-### How a private cell gets images
+### What the cell does today
 
-1. **Build and sign (Pavo).** Cloud Build publishes `ghcr.io/pavoai/*` and
-   cosign-signs them (signature + SBOM + vuln attestations). Per-service
-   ClusterImagePolicies in `pavo-bootstrap-aws` enforce that identity
-   (`ghcr.io/pavoai/<svc>*`, `image_policy_mode = enforce`).
-2. **Copy (artifact plane).** `Publish Artifact Plane` runs
-   `artifact-plane.sh`: `crane` copies those **same digests**, plus the
-   cell Helm images in `mirrored-images.json`, into the provisioner ECR
-   (`omnistrate/images/pavo/<upstream-host>/<path>`). Customer accounts
-   are granted pull (`consumers.json` / `grant`).
-3. **Pull on the cell.** `assemble-ecr-spec.py` rewrites Omnistrate Helm
-   image refs to that ECR. Bootstrap Helm pins the same ECR paths from
-   `mirrored-images.json`. Nodes pull over the VPC endpoint; the cell does
-   not fetch public registries. The copy changes **where the digest is
-   pulled from**, not which digest is admitted.
+1. **Build and sign.** Cloud Build publishes `ghcr.io/pavoai/*` and
+   cosign-signs them (signature + SBOM + vuln attestations).
+2. **Copy.** `Publish Artifact Plane` `crane`-copies those **same digests**,
+   plus the cell Helm images in `mirrored-images.json`, into provisioner ECR
+   (`omnistrate/images/pavo/<upstream-host>/<path>`). Customer accounts are
+   granted pull.
+3. **Pull.** Helm on the cell uses the ECR name over the VPC endpoint.
 
-### Pavo vs non-Pavo
+ClusterImagePolicy globs are still `ghcr.io/pavoai/<svc>*`. Policy-controller
+`no-match-policy = allow`. The ECR pull name does not match those globs, so
+**admission admits the private-cell image without a signature check.**
+Integrity on this cell today is digest pin + copy, not CIP. Signatures still
+exist on GHCR for the same digest; they are not consulted at admit time for
+the ECR name.
 
-| Images | Pull | Admission | Status |
-|---|---|---|---|
-| Pavo (`ghcr.io/pavoai/**`) | Same digest in artifact-plane ECR | CIP enforce; signatures still read from GHCR (`pavo-ghcr-signature-pull`). Shared `cloud-build@<central_ci_project>` remains a transition authority. | **Already the control.** Not a finding. |
-| Non-Pavo (ESO, ECK, Reloader, Prometheus, Grafana, OTel, policy-controller, …) | Same digest pin + ECR copy | `no-match-policy = allow`. No extra CIPs. | **Not changing mid-POC.** One-time verify as agreed. |
+### Plan (before we claim enforce on this cell)
+
+Add CIP globs for the artifact-plane ECR names (same digest; signatures still
+read from GHCR via `pavo-ghcr-signature-pull`, or copied next to the ECR
+digest). Keep `no-match-policy = allow` until those globs exist so a miss
+does not reject the cell. Then CIP enforce applies to the pull name.
+
+Non-Pavo images (ESO, ECK, Reloader, Prometheus, Grafana, OTel,
+policy-controller, …): same digest pin + ECR copy; no CIP; one-time verify as
+agreed; not changing mid-POC.
 
 ---
 
@@ -239,8 +246,8 @@ agreed.
 
 | Input | Answer on this branch |
 |---|---|
-| Preferred encryption at rest | **Customer-managed CMK** (`cell_kms_key_arn`). Existing Redis/SNS/EFS keys are left in place. |
-| Third-party image verification: POC-start blocker or before production? | **Not a start blocker.** Pavo images are signed and CIP-enforced. Non-Pavo stay digest-pinned ECR copies; one-time verify as agreed, no extra CIPs mid-POC. |
+| Preferred encryption at rest | **Customer-managed CMK** (`cell_kms_key_arn`), including app S3, SQS, node EBS default, and the stage-1 state bucket. Existing Redis/SNS/EFS keys are left in place. |
+| Third-party image verification: POC-start blocker or before production? | **Not a start blocker.** Private-cell pulls are ECR names; CIP globs still match GHCR only, so admission does not check those pulls today. Plan: CIP globs for the ECR names. Non-Pavo stay digest-pinned; one-time verify as agreed. |
 | EFS hardening + teardown during the POC? | **EFS shipped** (TLS deny, IAM opt-in, cluster-SG NFS). **Teardown** still §7 / mid-POC. |
 
 ---
@@ -249,5 +256,4 @@ agreed.
 
 - Stage 2 roles still attach the permission boundary; runner cannot create
   `pavo-*` / `keda-*` without one.
-- App S3 is SSE-S3, not the cell CMK.
 - Runner action-wildcards on `pavo-*` RDS/S3/SNS/SQS/ElastiCache remain.

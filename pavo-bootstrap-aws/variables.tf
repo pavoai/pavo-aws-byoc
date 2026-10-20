@@ -493,6 +493,172 @@ variable "enable_microvm_image_builds" {
   default     = false
 }
 
+# -----------------------------------------------------------------------------
+# Connector access from a strict cell. All three default to off/empty, so a cell
+# that sets none of them renders exactly as before. The two value inputs are
+# published as /pavo/cells/<eks_cluster_name>/* parameters (main.tf) instead of
+# being Omnistrate instance parameters: every instance deploy runs an early
+# Terraform phase WITHOUT instance parameters, and a grant gated on one is
+# dropped and later restored on every deploy (0b5f9db: the MicroVM grants were
+# revoked for 79 and 28 minutes that way). A cell value is present in every phase.
+# -----------------------------------------------------------------------------
+
+variable "connector_assumable_role_arns" {
+  description = <<-EOT
+    IAM roles in the customer's own accounts that Pavo's connectors may assume
+    (today: the Amazon SageMaker connector's IAM-role mode). Exact role ARNs only,
+    no wildcards. Default empty: no workload role may assume any role.
+
+    When non-empty, the cell publishes
+    /pavo/cells/<eks_cluster_name>/connector_assumable_role_arns, which the
+    per-instance module reads to let the workload role assume exactly these roles.
+    The permission boundary's matching ceiling (ConnectorAssumeCustomerRoles in
+    policy-statements.json) is always present, admits only a Pavo-issued external
+    ID (the "pavo-" prefix), and allows nothing on its own. The
+    customer's role must still trust the workload role (the principal shown in
+    Pavo's SageMaker setup panel) with the same external ID. That trust policy is
+    the customer's own and this input does not change it.
+
+    Why a prefix and not the exact external ID: the exact ID is derived per Pavo
+    tenant only once the Pavo instance exists, which is after this module is
+    applied, so it cannot be named here or in the boundary. The customer's trust
+    policy pins the exact value.
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for arn in var.connector_assumable_role_arns :
+      can(regex("^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$", arn))
+    ])
+    error_message = "connector_assumable_role_arns entries must be exact IAM role ARNs (arn:aws:iam::<12-digit account>:role/<name>), with no wildcards."
+  }
+}
+
+variable "strict_egress_extra_destinations" {
+  description = <<-EOT
+    Extra destinations that pods of a network_posture = "strict" instance may
+    reach, on top of the VPC, same-region S3 and the cluster's own services. For
+    the customer's own network only: an outbound proxy, or an on-premises range
+    reached over the customer's Transit Gateway or Direct Connect (for example a
+    self-hosted Confluence). Each entry is one IPv4 CIDR, the TCP ports allowed to
+    it, and a description that becomes the audit trail. Default empty: the strict
+    egress policy is unchanged.
+
+    Use a /32 for a single host (a proxy, a Confluence server). The floor is /16,
+    so a typo cannot open a whole internal network.
+
+    Published as /pavo/cells/<eks_cluster_name>/strict_egress_extra_destinations;
+    the per-instance strict egress NetworkPolicy adds one rule per entry, opening
+    only that CIDR and only those ports. This opens the Kubernetes policy only.
+    Routing to the destination (Transit Gateway, route tables, firewalls) is the
+    customer's network.
+  EOT
+  type = list(object({
+    cidr        = string
+    ports       = list(number)
+    description = string
+  }))
+  default = []
+
+  validation {
+    # try() on each part: validation conditions are not guaranteed to
+    # short-circuit (CI pins 1.9.8), so each part must be safe on its own. The
+    # regex keeps IPv6 out: the strict policy and the /16 floor are IPv4.
+    condition = alltrue([
+      for d in var.strict_egress_extra_destinations :
+      can(regex("^[0-9]{1,3}(\\.[0-9]{1,3}){3}/[0-9]{1,2}$", d.cidr)) && try(cidrsubnet(d.cidr, 0, 0) == d.cidr, false) && try(tonumber(split("/", d.cidr)[1]) >= 16, false)
+    ])
+    error_message = "strict_egress_extra_destinations: each cidr must be a canonical IPv4 CIDR (network address) with a prefix of /16 or longer; use /32 for a single host such as a proxy (e.g. 10.20.30.40/32)."
+  }
+
+  validation {
+    condition = alltrue([
+      for d in var.strict_egress_extra_destinations :
+      length(d.ports) > 0 && alltrue([for p in d.ports : p >= 1 && p <= 65535 && floor(p) == p])
+    ])
+    error_message = "strict_egress_extra_destinations: each entry needs at least one TCP port, each a whole number from 1 to 65535."
+  }
+
+  validation {
+    condition     = alltrue([for d in var.strict_egress_extra_destinations : trimspace(d.description) != ""])
+    error_message = "strict_egress_extra_destinations: each entry needs a description saying what the destination is."
+  }
+}
+
+variable "enable_sagemaker_api_endpoint" {
+  description = <<-EOT
+    Add the Amazon SageMaker API (com.amazonaws.<region>.sagemaker.api) to this
+    cell's interface endpoints (vpc_interface_endpoints.tf), with private DNS, so
+    the SageMaker connector reaches SageMaker in this region without leaving the
+    AWS network. Default false. Same reuse rule as the other cell endpoints: if a
+    foreign private-DNS SageMaker API endpoint already exists in the VPC, it is
+    reused and none is created.
+
+    Covers the SageMaker API in this cell's region only. SageMaker in another
+    region, and MLflow Apps (AWS publishes no PrivateLink endpoint for them), need
+    a separate route.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "snowflake_privatelink" {
+  description = <<-EOT
+    Snowflake over AWS PrivateLink, for a customer on Snowflake Business Critical
+    (or higher) hosted on AWS in this cell's region. Default null: nothing is
+    created. Both values come from SYSTEM$GET_PRIVATELINK_CONFIG, run in the
+    customer's Snowflake account after a Snowflake ACCOUNTADMIN has authorized this
+    AWS account with SYSTEM$AUTHORIZE_PRIVATELINK:
+      - vpce_service_name: the "privatelink-vpce-id" value
+        (com.amazonaws.vpce.<region>.vpce-svc-<id>).
+      - hostnames: the "privatelink-account-url" and
+        "regionless-privatelink-account-url" values. The two OCSP URLs are not
+        needed: this module opens HTTPS only, which requires Pavo's Snowflake
+        clients to run connector 4.8 or later (no OCSP checking by default).
+
+    Creates an interface endpoint to that service, a security group allowing only
+    HTTPS (443) from the cell VPC, and a Route 53 private hosted zone
+    privatelink.snowflakecomputing.com, associated with this VPC only, with one
+    CNAME per hostname pointing at the endpoint. Set manage_dns = false when the
+    customer's VPCs already resolve privatelink.snowflakecomputing.com (a shared
+    private hosted zone, or forwarding to their own resolvers): then only the
+    endpoint and its security group are created, hostnames may be empty, and the
+    customer's DNS team points the account hostnames at the endpoint's DNS name
+    (output snowflake_vpce_dns_name). The endpoint's IPs are inside the
+    VPC CIDR, which the strict egress policy already allows. In Pavo the
+    connector's account is then entered as the PrivateLink account identifier
+    (<locator>.<region>.privatelink): no code or connector field changes.
+    Snowflake's internal stages are reached through the cell's S3 gateway endpoint,
+    which only works when Snowflake is in this cell's region.
+  EOT
+  type = object({
+    vpce_service_name = string
+    hostnames         = optional(list(string), [])
+    manage_dns        = optional(bool, true)
+  })
+  default = null
+
+  validation {
+    # The attribute access sits inside can(), so a null input never errors here
+    # even though validation conditions do not short-circuit (CI pins 1.9.8).
+    condition     = var.snowflake_privatelink == null || can(regex("^com\\.amazonaws\\.vpce\\.[a-z0-9-]+\\.vpce-svc-[0-9a-f]+$", var.snowflake_privatelink.vpce_service_name))
+    error_message = "snowflake_privatelink.vpce_service_name must be the privatelink-vpce-id from SYSTEM$GET_PRIVATELINK_CONFIG (com.amazonaws.vpce.<region>.vpce-svc-<id>)."
+  }
+
+  validation {
+    condition = var.snowflake_privatelink == null || try(
+      (length(var.snowflake_privatelink.hostnames) > 0 || !var.snowflake_privatelink.manage_dns) && alltrue([
+        for h in var.snowflake_privatelink.hostnames :
+        can(regex("^(?i)[a-z0-9][a-z0-9.-]*\\.privatelink\\.snowflakecomputing\\.com$", h))
+      ]),
+      false,
+    )
+    error_message = "snowflake_privatelink.hostnames must list the PrivateLink account URLs from SYSTEM$GET_PRIVATELINK_CONFIG, each ending in .privatelink.snowflakecomputing.com. At least one is required unless manage_dns is false."
+  }
+}
+
 variable "legacy_eso_cell_secret_read" {
   description = "Keep the cell ESO role's account-wide read of RDS-managed (rds!*) secrets for instances still on the old per-instance ClusterSecretStore. Default false: the role denies all secret reads and each instance reads only its own secrets through its own SecretStore. Plan fails while any pavo-aws-sm-* ClusterSecretStore exists and this is false; upgrade those instances, or set true until they are upgraded."
   type        = bool

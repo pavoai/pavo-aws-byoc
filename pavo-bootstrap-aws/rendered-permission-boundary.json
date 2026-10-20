@@ -195,6 +195,21 @@
       ]
     },
     {
+      "Sid": "ConnectorAssumeCustomerRoles",
+      "Effect": "Allow",
+      "Action": [
+        "sts:AssumeRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::*:role/*"
+      ],
+      "Condition": {
+        "StringLike": {
+          "sts:ExternalId": "pavo-*"
+        }
+      }
+    },
+    {
       "Sid": "DenyCreateRoleWithoutBoundary",
       "Effect": "Deny",
       "Action": [
@@ -265,7 +280,8 @@
             "elasticache.*.amazonaws.com",
             "elasticfilesystem.*.amazonaws.com",
             "s3.*.amazonaws.com",
-            "sns.*.amazonaws.com"
+            "sns.*.amazonaws.com",
+            "sqs.*.amazonaws.com"
           ]
         }
       }

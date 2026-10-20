@@ -25,7 +25,7 @@ Pods can reach the internet through your NAT gateway. The deployment contacts:
 | Destination | Why | Controlled by |
 |---|---|---|
 | Artifact-plane ECR (same digest as `ghcr.io/pavoai/*`) | Runtime image pull. Cloud Build still signs at GHCR; `Publish Artifact Plane` copies the digest | always |
-| `ghcr.io` | Cosign signatures / attestations at admission (`pavo-ghcr-signature-pull`) | always |
+| `ghcr.io` | Cosign signatures exist here. CIP globs match these names; private-cell pods pull ECR names instead, so admission does not check those pulls today | always (signatures); CIP match is GHCR-only |
 | Sigstore (`fulcio.sigstore.dev`, Rekor) | Signature verification at admission | always |
 | Public Helm chart repositories | Add-on charts only if artifact-plane pins are omitted. Stage 1 Helm pins `mirrored-images.json` | stage 1 and 2 applies |
 | Terraform registry | Provider downloads by the Omnistrate runner | standard posture only |
@@ -70,9 +70,12 @@ internet and the instance metadata service are denied.
 - **Prerequisites:** a strict instance fails at plan time unless the cell has
   the private CA and NetworkPolicy enforcement ready
   (`/pavo/cells/<cluster>/private_ca_ready` and `network_policy_ready`).
-- **Images:** nodes pull from artifact-plane ECR over PrivateLink. ClusterImagePolicy
-  still covers `ghcr.io/pavoai/**`. Non-Pavo images (ESO, ECK, Reloader, …)
-  are digest-pinned ECR copies with `no-match-policy = allow`.
+- **Images:** nodes pull from artifact-plane ECR over PrivateLink. CIP globs
+  are still `ghcr.io/pavoai/<svc>*`; those ECR names do not match, and
+  `no-match-policy = allow`, so admission does not signature-check the pull.
+  Digest pin + copy is the integrity control until CIP globs include the ECR
+  names. Non-Pavo images (ESO, ECK, Reloader, …) are the same ECR copy with
+  no CIP.
 - **Not covered yet:** the public DNS record isn't suppressed in all
   configurations; see the `network_posture` description in
   `terraform-omnistrate-aws/variables.tf`.

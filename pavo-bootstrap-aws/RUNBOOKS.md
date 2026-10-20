@@ -122,8 +122,9 @@ customer keys.)
 - `helm_release.stakater_reloader` — Reloader installed in the `reloader`
   namespace, watching globally for Secret/ConfigMap changes.
 - `helm_release.policy_controller` — Sigstore Policy Controller admission
-  webhook installed in the `cosign-system` namespace. Validates ghcr.io/pavoai
-  images against the per-service ClusterImagePolicy objects below.
+  webhook installed in the `cosign-system` namespace. Validates matching
+  `ghcr.io/pavoai/<svc>*` pulls against the per-service ClusterImagePolicy
+  objects below. Private-cell ECR names do not match those globs today.
 - `helm_release.eck_operator` — ECK operator + CRDs, only when `enable_eck = true`.
 - `helm_release.observability_prometheus` / `observability_grafana` /
   `observability_otel_collector` — in-VPC metrics stack, only when
@@ -167,21 +168,30 @@ wider repo isn't shipped to them). The canonical source is
 sync when adding a new service.
 
 Mode defaults to `"enforce"` (`var.image_policy_mode`) — admission rejects any
-`ghcr.io/pavoai/**` image that fails cosign signature, SBOM attestation, or
-vuln attestation verification. Per-service signer SAs are provisioned by
-`central-ci/`. During the migration window the shared
+**matching** `ghcr.io/pavoai/<svc>*` image that fails cosign signature, SBOM
+attestation, or vuln attestation verification. Per-service signer SAs are
+provisioned by `central-ci/`. During the migration window the shared
 `cloud-build@<central_ci_project_id>` SA is also accepted — drop that
 authority once every service has migrated to its dedicated SA. Set to
 `"warn"` only for a one-off bake-in on a fresh image lineup before the first
 enforce-mode apply.
 
+Those globs are GHCR names. A private / no-NAT cell pulls the artifact-plane
+ECR rewrite (`omnistrate/images/pavo/ghcr.io/pavoai/...`). Combined with
+`no-match-policy = allow`, that pull is admitted **without** a signature
+check. Digest pin + `crane` copy is the integrity control until CIP globs
+include the ECR names.
+
 ### SSM (account + cell scope)
 
-- **5 cell-scoped** under `/pavo/cells/${eks_cluster_name}/`: `vpc_id`,
+- Cell-scoped under `/pavo/cells/${eks_cluster_name}/`: always `vpc_id`,
   `private_subnet_ids`, `eks_cluster_name`, `eks_oidc_provider`, `eso_role_arn`.
-- **2 account-scoped** under `/pavo/shared/`: `permission_boundary_arn`,
-  `bootstrap_cell` (the single-cell sentinel described under the README's *What it creates* section;
-  `prevent_destroy = true`).
+  Opt-in: `eck_ready`, `network_policy_ready`, `private_ca_ready`,
+  `observability_ready`, `connector_assumable_role_arns`,
+  `strict_egress_extra_destinations`.
+- Account-scoped under `/pavo/shared/`: `permission_boundary_arn`,
+  `bootstrap_cell` (the single-cell sentinel; `prevent_destroy = true`).
+  Opt-in: MicroVM publisher/build boundary ARNs.
 
 ### S3 — OpenTofu provider mirror (cell scope)
 

@@ -10,12 +10,14 @@
 | RDS PostgreSQL for Temporal (`temporal_mode = "self_hosted"`) | Workflow state | Cell key | TLS (regional RDS root CA shipped to the pods) |
 | ElastiCache Redis (3 groups) | Caches and queues | Cell key on **new** groups; existing groups keep their previous key (`ignore_changes`) | `redis_security_phase` (default `off`). New private cells should pass `enforced` (TLS + AUTH) |
 | EFS | Shared files for the workloads | Cell key on **new** filesystems. Changing `kms_key_id` is ForceNew — do not apply on an existing filesystem. | File-system policy denies non-TLS and mounts without an access point. IAM-signed mounts: `efs_iam_auth_enforced` (default `false`). Ingress is the EKS cluster SG |
-| S3 `onboarding` and `data` buckets | Uploaded and processed files | AES256 (SSE-S3), not the cell CMK | HTTPS |
+| S3 `onboarding` and `data` buckets | Uploaded and processed files | Cell key for **new objects**; existing objects stay SSE-S3 until rewritten | HTTPS |
 | S3 Elasticsearch snapshots (`es_mode = "self_hosted"`) | Search index snapshots | Cell key | HTTPS |
 | S3 identity state (`zitadel_mode = "self_hosted"`) | Terraform state for the identity Job | Cell key | HTTPS |
-| SQS queues | Work items, which may reference customer data | SSE-SQS | HTTPS |
+| SQS queues (worker + connector_sync) | Work items, which may reference customer data | Cell key | HTTPS |
 | SNS topics (`data_fetcher`, `dedup`, `connector_sync`) | Fan-out to the queues | Cell key on **new** topics; existing topics keep their previous key (`ignore_changes`) | HTTPS |
 | EBS volumes on the `gp3-cmk` storage class (stage 1, with `enable_observability`) | The in-VPC observability stack | Cell key | — |
+| Node EBS default / keyless gp3 (stage 1) | Worker nodes and volumes created without an explicit key | Cell key (account+region default). Existing volumes keep their key until replaced | — |
+| Stage 1 Terraform state bucket | OpenTofu state | Cell key when `create-state-backend.sh` is passed the CMK | HTTPS |
 
 Buckets block public access, and versioning is on for the application and
 identity-state buckets (`terraform-omnistrate-aws/main.tf`,

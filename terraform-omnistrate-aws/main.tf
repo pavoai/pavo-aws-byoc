@@ -535,13 +535,16 @@ resource "aws_s3_bucket_lifecycle_configuration" "pavo" {
   depends_on = [aws_s3_bucket_versioning.pavo]
 }
 
+# Cell CMK. Only new objects use it; existing ones keep SSE-S3 until rewritten.
 resource "aws_s3_bucket_server_side_encryption_configuration" "pavo" {
   for_each = aws_s3_bucket.pavo
   bucket   = each.value.id
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = data.aws_kms_key.cell_cmk.arn
     }
+    bucket_key_enabled = true
   }
 }
 
@@ -642,10 +645,13 @@ resource "aws_sns_topic" "pavo" {
 }
 
 # SQS DLQs (must exist before main queues reference them)
+# All queues use the cell CMK; SNS delivery needs the key policy statement
+# AllowSNSToSQSUnderCellKey (scripts/create-cmk.sh).
 resource "aws_sqs_queue" "worker_dlq" {
   for_each                  = local.worker_queues
   name                      = "pavo-${each.key}-dlq-${var.instance_id}"
   message_retention_seconds = 1209600 # 14 days
+  kms_master_key_id         = data.aws_kms_key.cell_cmk.arn
   tags                      = { Name = "pavo-${each.key}-dlq-${var.instance_id}" }
 }
 
@@ -658,6 +664,7 @@ resource "aws_sqs_queue" "worker" {
   name                       = "pavo-${each.key}-sub-${var.instance_id}"
   visibility_timeout_seconds = 600
   message_retention_seconds  = 604800
+  kms_master_key_id          = data.aws_kms_key.cell_cmk.arn
 
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.worker_dlq[each.key].arn
@@ -790,7 +797,7 @@ resource "aws_sns_topic" "connector_sync" {
 resource "aws_sqs_queue" "connector_sync_dlq" {
   name                      = "pavo-connector-sync-dlq-${var.instance_id}"
   message_retention_seconds = 1209600 # 14 days
-  sqs_managed_sse_enabled   = true    # SSE-SQS (SQS-owned key) at rest
+  kms_master_key_id         = data.aws_kms_key.cell_cmk.arn
   tags                      = { Name = "pavo-connector-sync-dlq-${var.instance_id}" }
 }
 
@@ -800,7 +807,7 @@ resource "aws_sqs_queue" "connector_sync" {
   name                       = "pavo-connector-sync-${each.key}-sub-${var.instance_id}"
   visibility_timeout_seconds = 600
   message_retention_seconds  = 604800 # 7 days — parity with GCP connector subs; preserves the scale-to-zero backlog buffer (KEDA wedged at 0 over a weekend must not lose messages)
-  sqs_managed_sse_enabled    = true   # SSE-SQS (SQS-owned key) at rest
+  kms_master_key_id          = data.aws_kms_key.cell_cmk.arn
 
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.connector_sync_dlq.arn
@@ -1147,7 +1154,7 @@ data "aws_iam_policy_document" "pavo_permissions" {
     )
   }
 
-  # Publishing to a topic under the cell key needs these on the key.
+  # SNS publish, S3 objects and SQS receive under the cell key.
   statement {
     effect    = "Allow"
     actions   = ["kms:GenerateDataKey", "kms:Decrypt"]
@@ -1155,7 +1162,7 @@ data "aws_iam_policy_document" "pavo_permissions" {
     condition {
       test     = "StringEquals"
       variable = "kms:ViaService"
-      values   = ["sns.${var.aws_region}.amazonaws.com"]
+      values   = ["sns.${var.aws_region}.amazonaws.com", "s3.${var.aws_region}.amazonaws.com", "sqs.${var.aws_region}.amazonaws.com"]
     }
   }
 
@@ -1306,6 +1313,30 @@ data "aws_iam_policy_document" "pavo_permissions" {
         test     = "StringEquals"
         variable = "ses:FromAddress"
         values   = ["noreply@${local.app_domain}"]
+      }
+    }
+  }
+
+  # Connector IAM-role mode (Amazon SageMaker today): onboarding (connect and
+  # Re-check), Tribal and intern all run as this role, and each assumes the
+  # customer's role directly from it. Exactly the role ARNs the customer listed
+  # in pavo-bootstrap-aws connector_assumable_role_arns (read from the cell in
+  # cell_gates.tf, never from an instance parameter), and only with a Pavo-issued
+  # external ID. This is the grant. The permission boundary carries only the
+  # ceiling (ConnectorAssumeCustomerRoles in pavo-bootstrap-aws's
+  # policy-statements.json: any role, Pavo external ID only), so the exact role
+  # limit is this statement's. No cell value, no statement.
+  dynamic "statement" {
+    for_each = length(local.connector_assumable_role_arns) > 0 ? [1] : []
+    content {
+      sid       = "ConnectorAssumeCustomerRoles"
+      effect    = "Allow"
+      actions   = ["sts:AssumeRole"]
+      resources = local.connector_assumable_role_arns
+      condition {
+        test     = "StringLike"
+        variable = "sts:ExternalId"
+        values   = ["pavo-*"]
       }
     }
   }

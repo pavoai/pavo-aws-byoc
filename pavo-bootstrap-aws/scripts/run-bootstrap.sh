@@ -35,7 +35,7 @@ fi
 # Fails fast if the cluster API is unreachable or we're not cluster-admin.
 EKS_CLUSTER_NAME="$cell" ./scripts/preflight.sh --mode=direct
 
-./scripts/create-state-backend.sh "$AWS_REGION"
+./scripts/create-state-backend.sh "$AWS_REGION" "$kms_key_arn"
 
 printf 'terraform {\n  backend "s3" {}\n}\n' > backend.tf
 terraform init -reconfigure \

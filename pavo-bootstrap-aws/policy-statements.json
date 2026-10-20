@@ -210,6 +210,19 @@
     ]
   },
   {
+    "sid": "ConnectorAssumeCustomerRoles",
+    "scope": "boundary",
+    "comment": "Ceiling for connectors that sign in by assuming a role in the customer's own account (Amazon SageMaker's IAM-role mode). It allows sts:AssumeRole only with a Pavo-issued external ID: the prefix pavo-, because the exact value is derived per tenant after the instance exists and cannot be named here. This is a ceiling, not a grant: the workload role's policy in terraform-omnistrate-aws/main.tf names the exact role ARNs from the cell parameter /pavo/cells/<cluster>/connector_assumable_role_arns (set through pavo-bootstrap-aws's connector_assumable_role_arns) and grants nothing while that is unset. The customer's role trust policy must also name the workload role and the exact external ID. Unconditional like the MicroVM ceilings above, so every account bootstrapped from this version carries it.",
+    "effect": "Allow",
+    "actions": ["sts:AssumeRole"],
+    "resources": ["arn:aws:iam::*:role/*"],
+    "conditions": {
+      "StringLike": {
+        "sts:ExternalId": "pavo-*"
+      }
+    }
+  },
+  {
     "sid": "IAMScopedToPavoNames",
     "scope": "runner",
     "effect": "Allow",
@@ -601,7 +614,8 @@
           "elasticache.*.amazonaws.com",
           "elasticfilesystem.*.amazonaws.com",
           "s3.*.amazonaws.com",
-          "sns.*.amazonaws.com"
+          "sns.*.amazonaws.com",
+          "sqs.*.amazonaws.com"
         ]
       }
     }

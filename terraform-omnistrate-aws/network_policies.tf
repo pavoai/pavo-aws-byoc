@@ -126,17 +126,33 @@ resource "kubectl_manifest" "strict_egress" {
     spec = {
       podSelector = {}
       policyTypes = ["Egress"]
-      egress = [
-        # In-VPC + S3-gateway + Kubernetes service ranges (all ports). Under the
-        # VPC CNI this also covers DNS and same-namespace pod-to-pod, since pod
-        # IPs are VPC IPs — a separate kube-system/podSelector rule would be dead
-        # weight. The one case it does NOT cover is a NodeLocal DNS cache, which
-        # answers on a link-local address: a live cell reads /etc/resolv.conf in a
-        # strict pod and, if a node-local resolver is in use, adds exactly that
-        # /32 here (never a broad link-local exception, which would reopen IMDS
-        # 169.254.169.254).
-        { to = [for cidr in local.strict_egress_cidrs : { ipBlock = { cidr = cidr } }] },
-      ]
+      egress = concat(
+        [
+          # In-VPC + S3-gateway + Kubernetes service ranges (all ports). Under the
+          # VPC CNI this also covers DNS and same-namespace pod-to-pod, since pod
+          # IPs are VPC IPs — a separate kube-system/podSelector rule would be dead
+          # weight. The one case it does NOT cover is a NodeLocal DNS cache, which
+          # answers on a link-local address: a live cell reads /etc/resolv.conf in a
+          # strict pod and, if a node-local resolver is in use, adds exactly that
+          # /32 here (never a broad link-local exception, which would reopen IMDS
+          # 169.254.169.254).
+          { to = [for cidr in local.strict_egress_cidrs : { ipBlock = { cidr = cidr } }] },
+        ],
+        # Customer-network destinations published by the cell (pavo-bootstrap-aws
+        # strict_egress_extra_destinations): the customer's outbound proxy, or an
+        # on-premises range such as a self-hosted Confluence. One rule per entry,
+        # opening only that CIDR and only its listed TCP ports. Read from the cell,
+        # not an instance parameter, so the list itself never depends on instance
+        # parameters (the policy as a whole is still created only when
+        # network_posture is strict, via local.strict_count). Routing to the
+        # destination is the customer's network; this only opens the policy.
+        [
+          for d in local.strict_egress_extra_destinations : {
+            to    = [{ ipBlock = { cidr = d.cidr } }]
+            ports = [for p in d.ports : { protocol = "TCP", port = p }]
+          }
+        ],
+      )
     }
   })
 

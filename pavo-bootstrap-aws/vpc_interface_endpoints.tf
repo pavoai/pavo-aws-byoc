@@ -30,17 +30,26 @@
 # =============================================================================
 
 locals {
-  vpc_interface_endpoint_services = [
-    "kms",
-    "secretsmanager",
-    "iam",
-    "rds",
-    "elasticache",
-    "sns",
-    "sqs",
-    "elasticfilesystem",
-    "email",
-  ]
+  vpc_interface_endpoint_services = concat(
+    [
+      "kms",
+      "secretsmanager",
+      "iam",
+      "rds",
+      "elasticache",
+      "sns",
+      "sqs",
+      "elasticfilesystem",
+      "email",
+    ],
+    # Opt-in connector endpoint (enable_sagemaker_api_endpoint): the Amazon
+    # SageMaker API for the SageMaker connector on a strict cell. Workload-only,
+    # unlike the list above, but kept here so every interface endpoint on the
+    # cell follows one pattern (same reuse rule, naming and security group) and
+    # two endpoints can never claim private DNS for the same service. Off by
+    # default.
+    var.enable_sagemaker_api_endpoint ? ["sagemaker.api"] : [],
+  )
 
   vpc_endpoint_service_name = {
     for s in local.vpc_interface_endpoint_services :
@@ -118,12 +127,16 @@ resource "aws_security_group" "vpc_interface_endpoints" {
   description = "HTTPS from within the VPC to PrivateLink interface endpoints"
   vpc_id      = local.vpc_id
 
+  # Every VPC CIDR block, primary and secondary: under the VPC CNI a pod's IP can
+  # come from a secondary block, and such a pod must reach these endpoints too
+  # (the strict egress NetworkPolicy allows the same set). The same list as the
+  # primary block alone on a VPC with one CIDR, so nothing changes there.
   ingress {
     description = "HTTPS from within the VPC"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
-    cidr_blocks = [data.aws_vpc.interface_endpoints.cidr_block]
+    cidr_blocks = data.aws_vpc.interface_endpoints.cidr_block_associations[*].cidr_block
   }
 
   egress {
@@ -131,7 +144,7 @@ resource "aws_security_group" "vpc_interface_endpoints" {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = [data.aws_vpc.interface_endpoints.cidr_block]
+    cidr_blocks = data.aws_vpc.interface_endpoints.cidr_block_associations[*].cidr_block
   }
 
   tags = {

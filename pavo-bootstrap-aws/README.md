@@ -51,6 +51,9 @@ Two scopes:
   `enable_microvm_image_builds = true` (or those markers already exist), also the
   MicroVM publisher/build permission boundaries and
   `/pavo/shared/microvm_*_boundary_arn`.
+  When `cell_kms_key_arn` is set, also the account EBS default key (= the CMK,
+  encryption by default on) plus KMS grants for the AutoScaling and EKS-nodegroup
+  service-linked roles, so node and keyless-StorageClass volumes use the CMK.
 - **Cell-scoped** (keyed on the cluster name): the ESO IRSA role + ESO / Reloader /
   Sigstore-policy-controller Helm releases, the `pd-balanced` StorageClass, the
   `pavo-nginx` IngressClass, the Let's Encrypt ClusterIssuer (and, when
@@ -100,7 +103,7 @@ It creates (naming convention — do not hand-name):
 
 | Resource | Name | Notes |
 |---|---|---|
-| S3 bucket | `pavo-tf-state-<account-id>` | versioned, AES256, public-access-blocked |
+| S3 bucket | `pavo-tf-state-<account-id>` | versioned, SSE-KMS under the CMK when passed (else AES256), public-access-blocked |
 | DynamoDB lock table | `pavo-tf-state-locks` | `LockID` hash key, on-demand |
 | State key (per cell) | `pavo-bootstrap-aws/<cluster>/terraform.tfstate` | |
 
@@ -215,7 +218,7 @@ export AWS_REGION=us-east-1           # your region
 | `eks_oidc_provider` | *Optional.* When omitted, read from the cluster. If set, **without** the `https://` prefix. |
 | `runner_role_arn` | IAM role ARN of the Omnistrate Terraform runner principal that needs cluster-admin RBAC on this EKS cluster. MUST be the role ARN (`arn:aws:iam::<acct>:role/<RoleName>`), NOT an assumed-role session ARN. Its account must equal the injected AWS provider's account (the deterministic cell-account guard). Pavo provides it. |
 | `k8s_get_token_role_arn` | *Optional; cross-account only.* IAM role the K8s/Helm exec-auth (`aws eks get-token --role-arn`) assumes when the run's **ambient** credentials are in a different account than the cell (e.g. a central Atlantis/CI account that assumes into the cell only at the provider level). Ambient creds must be able to assume it; it does **not** inherit provider-only options like `external_id`. Must differ from `runner_role_arn` and be in the provider's account. The module does **not** create its access entry (operator prerequisite). Empty = use ambient creds directly. |
-| `image_policy_mode` | Sigstore ClusterImagePolicy enforcement mode for `ghcr.io/pavoai/**` images. `"enforce"` (default) rejects admission of images that fail verification; `"warn"` admits them and emits a Warning to admission callers (reserved for one-off signing-bake-in on a fresh image lineup). |
+| `image_policy_mode` | Sigstore ClusterImagePolicy mode for globs `ghcr.io/pavoai/<svc>*`. `"enforce"` (default) rejects a **matching** image that fails verification; `"warn"` admits and warns. Policy-controller `no-match-policy = allow`. A private cell pulls artifact-plane ECR names, which do **not** match those globs, so admission does not check those pulls until CIP globs include the ECR rewrite. |
 | `policy_controller_chart_version` | Helm chart version for `sigstore/policy-controller`. Default `0.10.6`. Bump deliberately and validate by setting `image_policy_mode = "warn"` for the upgrade apply — chart upgrades can change webhook config paths or CRD API versions. |
 | `external_secrets_chart_version` | Helm chart version for `external-secrets/external-secrets`. Default `0.10.4` (v1beta1 CRDs). The image tag stays in `mirrored-images.json`; bump both together and check SecretStore compatibility. |
 | `reloader_chart_version` | Helm chart version for `stakater/reloader`. Default `1.1.0`. The image tag stays in `mirrored-images.json`; bump both together. |
@@ -231,6 +234,10 @@ export AWS_REGION=us-east-1           # your region
 | `kubeconfig_path` | Kubeconfig for Kubernetes-facing providers. Empty (default) uses `aws eks get-token`. Set only for a private-only cell whose API is not publicly reachable. |
 | `enable_microvm_image_builds` | Create the account-owned MicroVM publisher/build permission boundaries. **Default `false`.** Once either `/pavo/shared/microvm_*_boundary_arn` marker exists, `false` retains them. |
 | `legacy_eso_cell_secret_read` | Keep the cell ESO role's account-wide `rds!*` secret read. **Default `false`.** Plan fails while any `pavo-aws-sm-*` ClusterSecretStore exists and this is false. |
+| `connector_assumable_role_arns` | Exact IAM role ARNs in your accounts that Pavo's connectors may assume (Amazon SageMaker IAM-role mode). **Default empty.** Publishes them for the instance's workload role, which may then assume exactly these roles. The permission boundary's always-present ceiling limits this to a Pavo-issued external ID, and your role's trust policy requires the exact one. See *Connector access from a strict cell*. |
+| `strict_egress_extra_destinations` | Extra destinations (CIDR, TCP ports, description) that pods of a strict instance may reach, such as your outbound proxy or an on-premises range. **Default empty.** See *Connector access from a strict cell*. |
+| `enable_sagemaker_api_endpoint` | Add the SageMaker API to the cell's interface endpoints (`vpc_interface_endpoints.tf`). **Default `false`.** See *Connector access from a strict cell*. |
+| `snowflake_privatelink` | Snowflake over AWS PrivateLink: the endpoint service name and hostnames from `SYSTEM$GET_PRIVATELINK_CONFIG`. **Default `null`.** Needs Snowflake Business Critical on AWS in the cell's region. See *Connector access from a strict cell*. |
 
 Pavo sends `runner_role_arn`; the module finds the cluster, VPC, private
 subnets and OIDC issuer in the provider's account. Region is
@@ -468,6 +475,73 @@ Each in-VPC substrate is gated by a cell flag (`enable_eck` defaults `false`, `e
   > A newly created cell must not complete Phase 4 successfully unless the minimum observability data path has converged at least once.
 
   Deliberately narrow. It is a one-time creation assertion, **not** a permanent health check — Terraform must not become an ongoing monitoring system. Continuous health after creation belongs to Prometheus, Alertmanager and the workload-health alerting rules. Those two mechanisms cover different failure modes and neither substitutes for the other: the alerts run *inside* the stack they watch, so they cannot report Prometheus failing to start, which is exactly what the barrier exists to catch.
+
+## Connector access from a strict cell (`connector_assumable_role_arns`, `strict_egress_extra_destinations`, `enable_sagemaker_api_endpoint`, `snowflake_privatelink`)
+
+A strict cell has no NAT or internet gateway, and its instances' pods may reach only the VPC, same-region S3 and the cluster's own services. These four inputs let specific connectors reach the customer's own systems. All four default to off or empty, so a cell that sets none of them renders exactly as before.
+
+| Input | What it creates (cell-scoped) | What the instance does with it |
+|---|---|---|
+| `connector_assumable_role_arns` | The parameter `/pavo/cells/<cluster>/connector_assumable_role_arns` | Adds a statement to the workload role allowing it to assume exactly these roles, so connectors in IAM-role mode (Amazon SageMaker today) can sign in. The permission boundary limits this to a Pavo-issued external ID, and your role's trust policy requires the exact one |
+| `strict_egress_extra_destinations` | The parameter `/pavo/cells/<cluster>/strict_egress_extra_destinations` | Adds one rule per entry to the strict egress NetworkPolicy, opening only that CIDR and only its listed TCP ports |
+| `enable_sagemaker_api_endpoint` | Adds `sagemaker.api` to the cell's interface endpoints in `vpc_interface_endpoints.tf`: same reuse rule (an existing foreign private-DNS endpoint is reused), naming and HTTPS-only security group as the other cell endpoints, with private DNS | Nothing: the endpoint's IPs are inside the VPC, which the strict policy already allows |
+| `snowflake_privatelink` | An interface endpoint to your Snowflake endpoint service (on the same subnets as the other cell endpoints), its own security group allowing HTTPS (443) only from the cell VPC, and a Route 53 private hosted zone `privatelink.snowflakecomputing.com` associated with this VPC only, with one CNAME per PrivateLink hostname | Nothing: the endpoint's IPs are inside the VPC. In Pavo the Snowflake connector's account is entered as the PrivateLink identifier (`<locator>.<region>.privatelink`) |
+
+The permission boundary always carries the ceiling for this, as `ConnectorAssumeCustomerRoles` in [`rendered-permission-boundary.json`](rendered-permission-boundary.json), the boundary you review:
+
+```json
+{
+  "Sid": "ConnectorAssumeCustomerRoles",
+  "Effect": "Allow",
+  "Action": ["sts:AssumeRole"],
+  "Resource": ["arn:aws:iam::*:role/*"],
+  "Condition": { "StringLike": { "sts:ExternalId": "pavo-*" } }
+}
+```
+
+It is a ceiling, not a grant: it lets a workload role assume a role only with a Pavo-issued external ID, and allows nothing on its own. The workload role's own policy names exactly the roles you list in `connector_assumable_role_arns`, and has no such statement while the list is empty.
+
+Example `cells/<cluster>/<cluster>.tfvars` entries:
+
+```hcl
+connector_assumable_role_arns = ["arn:aws:iam::<account-id>:role/pavo-sagemaker-read"]
+
+strict_egress_extra_destinations = [
+  { cidr = "10.40.0.10/32", ports = [3128], description = "Outbound proxy to Microsoft (Power BI)" },
+]
+
+enable_sagemaker_api_endpoint = true
+
+# From SYSTEM$GET_PRIVATELINK_CONFIG in your Snowflake account
+snowflake_privatelink = {
+  vpce_service_name = "com.amazonaws.vpce.us-east-1.vpce-svc-0123456789abcdef0"
+  hostnames = [
+    "xy12345.us-east-1.privatelink.snowflakecomputing.com",
+    "myorg-myaccount.privatelink.snowflakecomputing.com",
+  ]
+  # false when your VPCs already resolve privatelink.snowflakecomputing.com (a
+  # shared private zone or forwarding to your resolvers): the endpoint is still
+  # created, hostnames may be empty, and your DNS team points the account
+  # hostnames at the endpoint's DNS name (output snowflake_vpce_dns_name).
+  manage_dns = true
+}
+```
+
+Snowflake over PrivateLink also needs steps in your Snowflake account, in this order:
+
+1. Your Snowflake ACCOUNTADMIN authorizes this cell's AWS account with `SYSTEM$AUTHORIZE_PRIVATELINK` (needs Business Critical or higher, with Snowflake on AWS in the cell's region).
+2. They run `SYSTEM$GET_PRIVATELINK_CONFIG` and pass the `privatelink-vpce-id` and the two PrivateLink account URLs (`privatelink-account-url` and `regionless-privatelink-account-url`) into `snowflake_privatelink` above, then apply this module. Your network team first says how your VPCs resolve `privatelink.snowflakecomputing.com`: if they already do, set `manage_dns = false` and have them point the two hostnames at the endpoint's DNS name (output `snowflake_vpce_dns_name`); otherwise leave it `true` and the module creates the private zone.
+3. They allow the Pavo service user to log in through the endpoint, typically a network rule of type `AWSVPCEID` naming the endpoint ID from this module's `snowflake_vpce_id` output.
+
+- **Three checks, all of which must pass.** The boundary allows assuming a role only with a Pavo-issued external ID. The workload role's policy, from the cell parameter, names exactly the roles you list. Your role's trust policy, which stays yours, names the workload role and the exact external ID shown in Pavo's setup panel.
+- **Why the boundary checks the external ID's `pavo-` prefix, not its exact value.** The exact external ID is derived for your Pavo tenant only once the Pavo instance exists, which is after this module is applied, so it cannot be named here. Your role's trust policy pins the exact value; the boundary adds that only a Pavo-issued ID is ever presented. Both are required for the assume-role call to succeed.
+- **Values come from the cell, not from instance parameters.** The role grant and the destination list therefore never depend on an instance parameter being present when an instance deploys. The strict egress policy they extend is itself created by the instance module when the instance's `network_posture` is `strict`.
+- **Order of operations.** Apply this module first so the parameters exist; instances pick them up on their next deploy. An instance on a cell that sets none of them renders nothing extra.
+- **Routing stays yours.** `strict_egress_extra_destinations` opens the Kubernetes egress policy only. Reaching a proxy or an on-premises range also needs your Transit Gateway, route tables and firewall rules.
+- **Keep destinations narrow.** Use a /32 for a single host such as a proxy or a Confluence server. The module accepts IPv4 only and rejects anything broader than /16, so a typo cannot open a whole internal network.
+- **Scope of the SageMaker endpoint.** It covers the SageMaker API in the cell's region. SageMaker in another region, and SageMaker MLflow Apps (AWS publishes no PrivateLink endpoint for them), need a separate route.
+- **Scope of the Snowflake endpoint.** It covers your Snowflake account in the cell's region. The endpoint goes in the cell's private subnets that are in Availability Zones your Snowflake endpoint service supports, and the plan stops with an error if there are none. Query results are downloaded from Snowflake's internal stage on S3 through the cell's S3 gateway endpoint, which reaches buckets in the same region only, so a Snowflake account in another region needs a different route. This module sets no policy on that gateway endpoint. If you restrict it, allow your account's stage bucket, which `SYSTEM$ALLOWLIST_PRIVATELINK()` lists with type `STAGE`.
+- **HTTPS only, unlike Snowflake's PrivateLink guide.** Snowflake's guide also opens port 80 on the endpoint, for its drivers' OCSP response cache. Since version 4.8.0 the Snowflake Connector for Python does no certificate-revocation (OCSP) checking unless a client opts in, so this input requires every Pavo service that connects to Snowflake to run connector 4.8 or later without opting in. An older client would wait out OCSP timeouts against the closed port before connecting. Certificate-chain and hostname verification still apply, and the traffic stays on PrivateLink. If your policy requires revocation checking, tell us: it needs port 80 on this endpoint, the two `ocsp.` hostnames and a client change. If a `privatelink.snowflakecomputing.com` zone is already shared into this VPC, or a Route 53 Resolver rule forwards `snowflakecomputing.com` to your own DNS, the zone here would clash: leave `snowflake_privatelink` unset and add the records on your side instead.
 
 ## Runbooks & reference
 

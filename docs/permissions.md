@@ -36,16 +36,21 @@ verification") explains each statement and how to check an edit.
 ## Image admission
 
 Stage 1 installs the Sigstore policy controller and one `ClusterImagePolicy`
-per Pavo service (`pavo-bootstrap-aws/main.tf`). Images from
-`ghcr.io/pavoai/**` must be signed keyless by the service's build identity,
-`cloud-build-<service>@<central_ci_project_id>.iam.gserviceaccount.com`,
-issued by `https://accounts.google.com`. During a transition period the shared
-build identity `cloud-build@<central_ci_project_id>.iam.gserviceaccount.com` is
-also accepted (see the comments in `pavo-bootstrap-aws/main.tf`).
-`image_policy_mode` defaults to `enforce`, which rejects unsigned or wrongly
-signed images. `no-match-policy = allow` admits non-Pavo images (ESO, ECK,
-Reloader, Prometheus, …). Those are digest-pinned and copied into artifact-plane
-ECR; they are not given extra ClusterImagePolicies in this snapshot.
+per Pavo service (`pavo-bootstrap-aws/main.tf`). The globs are
+`ghcr.io/pavoai/<svc>*`. A matching image must be signed keyless by
+`cloud-build-<service>@<central_ci_project_id>.iam.gserviceaccount.com`
+(issuer `https://accounts.google.com`). The shared
+`cloud-build@<central_ci_project_id>` identity is still accepted during
+transition.
+
+A private cell pulls artifact-plane ECR names
+(`omnistrate/images/pavo/ghcr.io/pavoai/...`), which **do not match** those
+globs. `no-match-policy = allow`, so admission does **not** signature-check
+the image the pod starts. Integrity there is digest pin + copy. Plan: add CIP
+globs for the ECR names before claiming enforce on this cell.
+
+Non-Pavo images (ESO, ECK, Reloader, Prometheus, …) are the same ECR copy with
+no CIP; one-time verify as agreed.
 
 To verify an image yourself:
 

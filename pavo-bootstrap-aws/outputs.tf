@@ -37,3 +37,13 @@ output "vpc_interface_endpoint_ids" {
   description = "Cell-scoped Interface VPC endpoint IDs (kms / secretsmanager / iam / rds / elasticache / sns / sqs / elasticfilesystem / email), keyed by service. Empty when every service already has a foreign private-DNS endpoint."
   value       = { for svc, ep in aws_vpc_endpoint.interface : svc => ep.id }
 }
+
+output "snowflake_vpce_id" {
+  description = "Snowflake PrivateLink interface endpoint ID, for the AWSVPCEID network rule in the customer's Snowflake account; null unless snowflake_privatelink is set."
+  value       = try(aws_vpc_endpoint.snowflake[0].id, null)
+}
+
+output "snowflake_vpce_dns_name" {
+  description = "Regional DNS name of the Snowflake PrivateLink interface endpoint, for the customer's own CNAME records when snowflake_privatelink.manage_dns is false; null unless the endpoint exists."
+  value       = try(aws_vpc_endpoint.snowflake[0].dns_entry[0].dns_name, null)
+}
