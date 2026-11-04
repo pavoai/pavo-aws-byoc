@@ -6,11 +6,10 @@
 # - RDS PostgreSQL 16 (Cloud SQL equivalent)
 # - ElastiCache Redis ×3 (Memorystore equivalent)
 # - S3 buckets ×2 (GCS equivalent)
-# - SNS ×2 + SQS ×3 main + SQS ×3 DLQ (Pub/Sub equivalent)
+# - SNS topics + SQS queues and DLQs (Pub/Sub equivalent)
 # - EFS (Filestore RWX equivalent) + EBS gp3 StorageClass alias
 # - IAM role with IRSA (Workload Identity equivalent)
 # - VAPID keys for Web Push notifications (same as GCP module)
-# - IngressClass + ClusterIssuer (cluster-scoped, SSA PATCH idempotent)
 # -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
@@ -47,7 +46,7 @@ data "aws_ssm_parameter" "permission_boundary_arn" {
 }
 
 # Note: data.aws_ssm_parameter.eso_role_arn and
-# data.aws_ssm_parameter.ebs_csi_permission_boundary_arn were removed in PR 2.
+# data.aws_ssm_parameter.ebs_csi_permission_boundary_arn were removed.
 # Their consumers (ESO Helm release, ebs_csi IAM role) moved to
 # pavo-bootstrap-aws, which owns the cell-scoped K8s/Helm stack.
 
@@ -110,10 +109,10 @@ resource "aws_security_group" "rds" {
   vpc_id      = var.vpc_id
 
   ingress {
-    from_port   = 5432
-    to_port     = 5432
-    protocol    = "tcp"
-    cidr_blocks = [data.aws_vpc.eks.cidr_block]
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [data.aws_eks_cluster.primary.vpc_config[0].cluster_security_group_id]
   }
 
   egress {
@@ -254,7 +253,7 @@ resource "time_sleep" "wait_for_rds" {
 
 # Create databases via a Kubernetes Job — runs inside the EKS cluster so it has
 # VPC access to the private RDS endpoint. psql is not available in the Omnistrate
-# Terraform execution environment (which runs outside the VPC).
+# Terraform execution environment.
 resource "kubernetes_job_v1" "create_databases" {
   depends_on = [
     time_sleep.wait_for_rds,
@@ -485,13 +484,14 @@ resource "aws_elasticache_replication_group" "intern" {
 locals {
   # Effective public app domain shared by browser-facing infrastructure and
   # the SES sending identity. Custom domains override the standard fallback.
+  # Mirrored in pavo-cert-aws/main.tf (certificate CN); change both.
   app_domain = var.app_domain != "" ? var.app_domain : "${var.customer_name}.${var.base_domain}"
 
   # Browser requests must use the frontend's effective public origin:
   # - Standard BYOC/VPC: local.app_domain falls back to <customer_name>.<base_domain>.
-  # - Custom/Plan 2: local.app_domain preserves the configured domain (for example, app.pavoai.com).
+  # - Custom domain: local.app_domain preserves the configured domain.
   cors_origins = concat(
-    ["https://${local.app_domain}", "http://localhost:3000", "http://localhost:5173"],
+    ["https://${local.app_domain}"],
     var.extra_cors_origins
   )
 
@@ -615,7 +615,7 @@ moved {
 }
 
 # -----------------------------------------------------------------------------
-# SNS Topics ×2 + SQS Queues ×3 main + ×3 DLQ
+# SNS topics + SQS queues and DLQs
 # -----------------------------------------------------------------------------
 # Not three identical stacks: 2 topics, 3 queues, uneven wiring
 # (orch → data_fetcher; nugget + rag → dedup). connector_sync below is a
@@ -759,18 +759,16 @@ moved {
 }
 
 # -----------------------------------------------------------------------------
-# Connector sync (Phase 2): one SNS topic + one SQS queue per connector type,
+# Connector sync: one SNS topic + one SQS queue per connector type,
 # each subscribed with an SNS filter policy on the connector_type message
 # attribute so a queue only receives its own type's jobs. Each connector worker
 # consumes its queue and scales to zero on backlog (KEDA aws-sqs-queue scaler).
 # Mirrors the GCP connector_sync topic + per-type filtered subscriptions.
-# Three things MUST stay aligned: (1) this list (and its GCP twin in
-# terraform-omnistrate-gcp/main.tf); (2) the app chart's applications.<type> blocks
-# (infra-omnistrate/helm/onboarding-copy) whose image repository is the
+# Three things MUST stay aligned: (1) this list (and its GCP twin);
+# (2) the app chart's applications.<type> blocks whose image repository is the
 # onboarding-connector-service image -- the chart derives its connector apps from
-# that suffix via onboarding.isConnectorApp in _helpers.tpl; there is no
-# connectorTypes list any more; (3) common/pubsub/constants.py CONNECTOR_HANDLING /
-# CONNECTOR_TYPES in onboarding-copy. A type enabled in the chart but missing here
+# that suffix; there is no connectorTypes list any more; (3) the connector-type
+# constants in the application code. A type enabled in the chart but missing here
 # has no queue -> the broker drops every job for that type: on KEDA cells the
 # worker simply stays at 0 replicas (silent loss), on non-KEDA/legacy cells it
 # CrashLoops on NOT_FOUND; keep all three aligned.
@@ -848,7 +846,7 @@ resource "aws_sqs_queue_policy" "connector_sync" {
 
 # -----------------------------------------------------------------------------
 # KEDA aws-sqs-queue scaler auth (mirrors the GCP keda-monitoring GSA + WI +
-# ClusterTriggerAuthentication added in the canary-amenity PR). The KEDA operator
+# ClusterTriggerAuthentication). The KEDA operator
 # is a cluster singleton in the `keda` namespace (installed as a cell amenity);
 # its operator KSA is annotated (in the amenity Helm values) with this role's ARN,
 # and the scaler reads SQS backlog via that identity. Fixed role name so the
@@ -964,12 +962,12 @@ resource "aws_efs_file_system" "pavo" {
     # omnistrate. Our StorageClass uses provisioningMode=efs-ap, so every
     # dynamic PVC bind calls CreateAccessPoint against this filesystem; without
     # the tag it sits outside that ceiling and the call is denied at the
-    # RESOURCE level, regardless of the driver role's own inline policy. That is
-    # why adding an inline policy during an earlier customer onboarding changed
-    # nothing. intern-shared and jupyter-worker-shared then hang Pending for the
+    # RESOURCE level, regardless of the driver role's own inline policy, so
+    # adding an inline policy changes nothing.
+    # intern-shared and jupyter-worker-shared then hang Pending for the
     # full 30-minute helm wait and intern/exec-runner fail to converge.
     #
-    # Confirmed with Omnistrate (Alok, 2026-08-29) as the INTENDED pattern for a
+    # Confirmed with Omnistrate as the intended pattern for a
     # filesystem the service provider creates itself. On the delete-exposure
     # question: the tag does widen what the dataplane agent COULD do
     # (elasticfilesystem:* on tag-matched resources, so DeleteFileSystem
@@ -1088,8 +1086,22 @@ resource "aws_efs_file_system_policy" "pavo" {
 
 # -----------------------------------------------------------------------------
 # IAM Role with IRSA (Workload Identity equivalent)
-# One shared role for all KSAs in the namespace — Phase 1
+# One shared role for all KSAs in the namespace
 # -----------------------------------------------------------------------------
+
+locals {
+  workload_service_accounts = [
+    "pavo-gateway-ksa", "pavo-intern-ksa", "pavo-frontend-ksa", "pavo-onboarding-ksa",
+    "pavo-tribal-ksa", "pavo-capability-proxy", "pavo-execrunner-ksa",
+  ]
+
+  # The amd64 workload pool the plan's compute block provisions for every app
+  # service (spec instanceTypes); zitadel-provisioner and the Temporal codec image
+  # are amd64-only, and the Omnistrate default pool is arm64. Keep in step with the spec.
+  workload_node_selector = {
+    "node.kubernetes.io/instance-type" = "t3.2xlarge"
+  }
+}
 
 data "aws_iam_policy_document" "irsa_trust" {
   statement {
@@ -1102,10 +1114,11 @@ data "aws_iam_policy_document" "irsa_trust" {
     }
 
     condition {
-      test     = "StringLike"
+      test     = "StringEquals"
       variable = "${var.eks_oidc_provider}:sub"
-      # Allow any KSA in the instance namespace
-      values = ["system:serviceaccount:${var.instance_id}:*"]
+      # Only the app KSAs the plan annotates with this role (serviceAccount.name per
+      # chart in the Omnistrate spec). Other KSAs in the namespace carry their own roles.
+      values = [for sa in local.workload_service_accounts : "system:serviceaccount:${var.instance_id}:${sa}"]
     }
 
     condition {
@@ -1186,7 +1199,7 @@ data "aws_iam_policy_document" "pavo_permissions" {
   }
 
   # Bedrock LLM inference — scoped to specific model ARNs (least-privilege;
-  # if the model changes, this policy must update in the same PR as BEDROCK_MODEL)
+  # if the model changes, this policy must update together with BEDROCK_MODEL)
   # Cross-region inference profiles (us.*) internally route to any US region (us-east-1,
   # us-east-2, us-west-2). The IAM check fires at the destination, so foundation-model ARNs
   # must use a wildcard region; the inference-profile ARN itself stays region-scoped.
@@ -1196,7 +1209,7 @@ data "aws_iam_policy_document" "pavo_permissions" {
   # pavo-platform-sdk. It is invoked directly as a foundation model (no
   # cross-region inference profile) and, being AWS first-party, needs no
   # marketplace model-use agreement. Same rule as above: if
-  # embeddingDefaultModel changes, update this ARN in the same PR.
+  # embeddingDefaultModel changes, update this ARN with it.
   statement {
     effect  = "Allow"
     actions = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
@@ -1205,15 +1218,12 @@ data "aws_iam_policy_document" "pavo_permissions" {
       "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-sonnet-4-6",
       "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-4-6-v1",
       "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-opus-4-6-v1",
-      # Opus 5 (2026-10-02): the Multi-Tenant plan's book writer moves to it
-      # (spec bookAgentModel delta in render-multitenant-spec.py). Listed for
-      # both plans so a BYOC cell can follow with a spec change alone.
+      # Opus 5: listed so a BYOC cell can adopt it with a spec change alone.
       "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-5",
       "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-opus-5",
-      # Opus 5.5 (2026-10-07): the Multi-Tenant plan's book writer moves to it
-      # once the tribal image that speaks its request contract is live (forced
-      # tool choice 400s, thinking cannot be disabled). Listed for both plans
-      # so a BYOC cell can follow with a spec change alone.
+      # Opus 5.5: usable once the tribal image that speaks its request contract
+      # is live (forced tool choice 400s, thinking cannot be disabled). Listed
+      # so a BYOC cell can adopt it with a spec change alone.
       "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-5-5",
       "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-opus-5-5",
       "arn:aws:bedrock:*::foundation-model/amazon.titan-embed-text-v2:0",
@@ -1242,7 +1252,7 @@ data "aws_iam_policy_document" "pavo_permissions" {
   # meaningful rather than merely permitted: infrastructure can satisfy 1 and 2
   # while every client still opens a plaintext unauthenticated connection, which
   # is exactly the state that made this grant dead for its whole life.
-  # scripts/simulate-policy.py carries the same three-part gate; keep them in
+  # Pavo's policy simulation carries the same three-part gate; keep them in
   # step.
 
   # Lambda MicroVMs computer backend — the sandbox/exec runtime can run on AWS
@@ -1259,15 +1269,15 @@ data "aws_iam_policy_document" "pavo_permissions" {
   # absent, so the gate rendered false, this policy was re-applied WITHOUT the
   # MicroVM statements, and a later phase put them back. Each deploy therefore
   # opened a window in which every sandbox on the cell failed AccessDenied on
-  # RunMicrovm — 2026-08-17 09:48Z→11:07Z and 2026-08-18 12:36Z→13:04Z in the
-  # role's CloudTrail PutRolePolicy history. Any gate sourced from a per-instance
+  # RunMicrovm (visible in the role's CloudTrail PutRolePolicy history). Any
+  # gate sourced from a per-instance
   # value reintroduces that outage; do not add one back.
   #
   # The account-level control is the permission boundary attached to
   # aws_iam_role.pavo below, whose content comes from
   # pavo-bootstrap-aws/policy-statements.json: in an account whose boundary omits
   # the MicroVM ceiling these grants cap to nothing (implicit deny, not an
-  # error). Verify against a live role with scripts/verify-microvm-grants.py.
+  # error). Verify against a live role with an IAM policy simulation.
   statement {
     effect = "Allow"
     actions = [
@@ -1360,7 +1370,7 @@ resource "terraform_data" "bedrock_model_agreements" {
 
   provisioner "local-exec" {
     # Best-effort: the provisioning role intentionally holds no Bedrock agreement
-    # permissions (Option B / least-privilege), so these `aws bedrock` calls fail
+    # permissions (least-privilege), so these `aws bedrock` calls fail
     # with AccessDenied; on_failure = continue keeps that from aborting the whole
     # apply. The customer enables Bedrock model access once during onboarding, and
     # it's verified separately during onboarding readiness.
@@ -1400,7 +1410,7 @@ resource "terraform_data" "bedrock_model_agreements" {
 
 # Note: the EKS access entry that grants the Omnistrate runner cluster-admin
 # RBAC, along with `data.aws_iam_session_context.current` and
-# `time_sleep.wait_for_eks_access`, moved to pavo-bootstrap-aws in PR 2. The
+# `time_sleep.wait_for_eks_access`, moved to pavo-bootstrap-aws. The
 # runner's access entry is now created once per cell at bootstrap time.
 
 # -----------------------------------------------------------------------------
@@ -1559,7 +1569,7 @@ resource "kubectl_manifest" "eso_secret_store" {
 # `terraform validate` against alekc/kubectl 2.2.0 schema during planning).
 # external_secret_db_credentials uses `kubectl_manifest` (alekc/kubectl).
 #
-# PR #118 swapped this to `kubernetes_manifest` (hashicorp/kubernetes) to avoid
+# An earlier revision swapped this to `kubernetes_manifest` (hashicorp/kubernetes) to avoid
 # the SSA-normalization diff loop, but that provider does a plan-time OpenAPI
 # schema lookup for the GVK and reliably errored on the Omnistrate runner with
 #
@@ -1569,13 +1579,12 @@ resource "kubectl_manifest" "eso_secret_store" {
 # even with: ESO CRDs installed (v1beta1 served+storage), RBAC cluster-admin,
 # namespace existing, OpenAPI v2+v3 listing v1beta1.ExternalSecret, and adjacent
 # `kubectl_manifest` resources working on the exact same runner. Likely a
-# hashicorp/kubernetes 2.30.x OpenAPI-cache quirk on the per-instance runner pods;
-# see follow-up investigation tracked separately.
+# hashicorp/kubernetes 2.30.x OpenAPI-cache quirk on the per-instance runner pods.
 #
 # So we're back on `kubectl_manifest` with the original SSA-diff-loop guard:
 # `lifecycle { ignore_changes = [yaml_body] }` suppresses the loop where alekc/kubectl
-# sees ESO-controller-mutated fields as drift and tries destroy/recreate every plan
-# (the wedge that hit a live instance). Intentional manifest updates require:
+# sees ESO-controller-mutated fields as drift and tries destroy/recreate every plan.
+# Intentional manifest updates require:
 #   terraform apply -replace=kubectl_manifest.external_secret_db_credentials
 resource "kubectl_manifest" "external_secret_db_credentials" {
   yaml_body         = <<-YAML
@@ -1616,8 +1625,8 @@ resource "kubectl_manifest" "external_secret_db_credentials" {
             #     consumed by Alembic migration jobs / initContainers.
             #
             # intern is special: its app code rewrites the prefix internally
-            # (src/app/db/session.py:_to_asyncpg_url + src/init_intern_db.py),
-            # AND it has sync engines in src/temporal/worker.py and the
+            # (in its DB session setup),
+            # AND it has sync engines in its Temporal worker and the
             # sessionmaker. Both contexts in intern consume DATABASE_URL_INTERN
             # which must be sync; there is intentionally no
             # DATABASE_URL_INTERN_SYNC because nothing reads it.
@@ -1679,18 +1688,12 @@ resource "kubectl_manifest" "external_secret_db_credentials" {
   ]
 }
 
-# Note: Stakater Reloader Helm release moved to pavo-bootstrap-aws in PR 2
+# Note: Stakater Reloader Helm release moved to pavo-bootstrap-aws
 # (cell-scoped — one Reloader install per cluster).
 
-# Note: the EBS CSI driver IRSA stack (IAM role, role-policy attachment, SA
-# annotation, ebs-csi-leases Role + RoleBinding, ebs_gp3 / pd-balanced
-# StorageClass), plus the pavo-nginx IngressClass and pavo-letsencrypt-prod
-# ClusterIssuer, all moved to pavo-bootstrap-aws in PR 2. These are inherently
-# per-cell (cluster-scoped K8s objects + cluster-OIDC-bound IAM roles), and
-# the previous per-instance ownership was the lifecycle bug that broke EBS
-# IRSA for every other instance on the cluster whenever any single instance
-# was destroyed. See plan section "Resource scoping matrix" / "EBS CSI
-# special handling" for the full story.
+# Note: the ebs_gp3 / pd-balanced StorageClass, pavo-nginx IngressClass and
+# pavo-letsencrypt-prod ClusterIssuer moved to pavo-bootstrap-aws (cluster-scoped,
+# per-cell). The EBS CSI driver and its IRSA role are Omnistrate-owned.
 
 # -----------------------------------------------------------------------------
 # EFS StorageClass (per-instance — name includes var.instance_id)
@@ -1714,7 +1717,7 @@ resource "kubernetes_storage_class_v1" "efs_pavo" {
     provisioningMode = "efs-ap"
     fileSystemId     = aws_efs_file_system.pavo.id
     directoryPerms   = "700"
-    uid              = "1000" # Must match securityContext.runAsUser in onboarding-copy Helm charts and useradd UID in connector_services/Dockerfile
+    uid              = "1000" # Must match securityContext.runAsUser in the app Helm charts and the image's useradd UID
     gid              = "1000"
   }
 
@@ -1725,8 +1728,7 @@ resource "kubernetes_storage_class_v1" "efs_pavo" {
 # Sigstore Policy Controller — cluster-scoped image signature + attestation
 # enforcement
 # -----------------------------------------------------------------------------
-# (See terraform-omnistrate-gcp/main.tf for the full design + rationale.
-# Post-rescope (PRs #115/#118), the EKS access entry that the Omnistrate
+# (Post-rescope, the EKS access entry that the Omnistrate
 # Terraform runner needs is created by pavo-bootstrap-aws BEFORE the first
 # pavoInfra apply — so the previous `time_sleep.wait_for_eks_access` guard
 # is no longer needed in this module.)
@@ -1898,10 +1900,10 @@ resource "random_password" "worker_api_secret" {
 # -----------------------------------------------------------------------------
 # State migration shims: forget pre-rescope zitadel_* resources from state.
 # -----------------------------------------------------------------------------
-# PR #118 (3aacddd) moved the 9 zitadel_* resources out of pavoInfra and into
+# An earlier revision moved the 9 zitadel_* resources out of pavoInfra and into
 # pavo-customer-bootstrap, AND removed the `provider "zitadel" {}` block from
-# providers.tf. Pre-#118 instances (created
-# 2026-05-20) still carry those resources in their pavoInfra terraform state.
+# providers.tf. Older instances still carry those resources in their pavoInfra
+# terraform state.
 # When pavoInfra plans against that state without a declared zitadel provider,
 # Terraform synthesizes an empty `provider["registry.opentofu.org/zitadel/zitadel"]`
 # and the plan fails:
@@ -1913,18 +1915,18 @@ resource "random_password" "worker_api_secret" {
 # The `removed` blocks below tell Terraform to drop the resources from state
 # WITHOUT invoking the provider to destroy the cloud objects. This is correct:
 # pavo-customer-bootstrap now owns these objects in Pavo's Zitadel tenant
-# (imported into customer-bootstrap state in Phase 1 of the rescope); destroying
+# (imported into customer-bootstrap state); destroying
 # them from pavoInfra would break the customer-bootstrap ownership.
 #
 # IMPORTANT: `from` MUST omit instance keys like `[0]` — Terraform matches the
 # block against every instance of the resource address. Including `[0]` is a
 # documented syntax error.
 #
-# Removal: keep these blocks until every pre-#118 pavoInfra state has been
+# Removal: keep these blocks until every older pavoInfra state has been
 # planned at least once against this code (state entries get cleared on the
 # first successful plan that processes the `removed` block). After existing
-# instances reach RUNNING on this version, drop these in a
-# cleanup PR. Until then they are no-ops on fresh states.
+# instances reach RUNNING on this version, drop these. Until then they are
+# no-ops on fresh states.
 # -----------------------------------------------------------------------------
 
 removed {
@@ -1993,13 +1995,13 @@ removed {
 # -----------------------------------------------------------------------------
 # State migration shims: forget Sigstore cluster-scoped resources from state.
 # -----------------------------------------------------------------------------
-# PR #90 briefly placed `helm_release.policy_controller` and
+# An earlier revision briefly placed `helm_release.policy_controller` and
 # `kubectl_manifest.pavo_image_policy` (per-service ClusterImagePolicy) here.
 # These are cluster-scoped — they belong in `pavo-bootstrap-aws/` per the
 # ownership rule (no cluster-scoped K8s resource may live in pavoInfra). They
-# were moved out by this PR.
+# were moved out.
 #
-# In practice every post-#90 pavoInfra apply failed at plan time on a broken
+# In practice every such pavoInfra apply failed at plan time on a broken
 # `file("${path.module}/../spec/image-manifest.json")` in a `locals` block,
 # which evaluates BEFORE any resource is reconciled — so the resources never
 # actually got created and state should be clean. These blocks are belt-and-
@@ -2008,7 +2010,7 @@ removed {
 # destroying the cluster-wide policy resources (now owned by bootstrap).
 #
 # Removal: keep until every pavoInfra state has been planned at least once
-# against this code. Safe to drop in a cleanup PR after existing instances
+# against this code. Safe to drop after existing instances
 # re-reach RUNNING on this version.
 # -----------------------------------------------------------------------------
 

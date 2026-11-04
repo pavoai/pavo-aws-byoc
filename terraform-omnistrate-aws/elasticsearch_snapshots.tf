@@ -1,12 +1,11 @@
 # =============================================================================
-# Self-hosted Elasticsearch — snapshot substrate (C3)
+# Self-hosted Elasticsearch — snapshot substrate
 # =============================================================================
-# Adds the backup path for the self_hosted ES cluster (C2): a dedicated
+# Adds the backup path for the self_hosted ES cluster: a dedicated
 # SSE-KMS S3 bucket under the customer CMK, the S3+KMS IAM policy on the snapshot
 # role, and a one-shot idempotent bootstrap Job that registers the repo + SLM.
-# All count-gated on es_mode = "self_hosted" (local.es_count from C2). Validated
-# live on a test cell in the Phase 0 spike (snapshot -> restore under the customer
-# CMK, _verify passed first try).
+# All count-gated on es_mode = "self_hosted" (local.es_count). Validated
+# live on a test cell (snapshot -> restore under the customer CMK).
 
 locals {
   es_snapshot_bucket = "pavo-${var.customer_name}-es-snap-${var.instance_id}"
@@ -46,7 +45,7 @@ locals {
 }
 
 # -----------------------------------------------------------------------------
-# Dedicated snapshot bucket — SSE-KMS default = customer CMK (INV-1/2)
+# Dedicated snapshot bucket — SSE-KMS default = customer CMK
 # -----------------------------------------------------------------------------
 resource "aws_s3_bucket" "es_snapshots" {
   count = local.es_count
@@ -98,7 +97,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "es_snapshots" {
 }
 
 # -----------------------------------------------------------------------------
-# S3 + KMS policy on the snapshot IRSA role (from C2). Scoped to this bucket +
+# S3 + KMS policy on the snapshot IRSA role (from elasticsearch_self_hosted.tf). Scoped to this bucket +
 # the customer CMK (kms:ViaService = s3). The workload permission boundary the
 # role carries already permits S3 on pavo-* and KMS on the customer key.
 # -----------------------------------------------------------------------------
@@ -143,7 +142,7 @@ resource "aws_iam_role_policy" "es_snapshots" {
 # -----------------------------------------------------------------------------
 # Terraform creates the Job (+ mounts the ECK CA and the bootstrap user secret);
 # the Job talks to ES. Terraform never calls the ES API and never holds an ES
-# credential in state (INV-5). _verify is a provision-time gate: if the backup
+# credential in state. _verify is a provision-time gate: if the backup
 # substrate is misconfigured the Job fails and the apply fails, so a cluster
 # with no working backups is never silently shipped.
 resource "kubernetes_job_v1" "es_bootstrap" {

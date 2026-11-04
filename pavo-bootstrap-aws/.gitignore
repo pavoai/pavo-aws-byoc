@@ -4,12 +4,7 @@
 *.tfvars
 backend.tf
 
-# Per-cell tfvars under cells/ are tracked in the private repo only (`cells/`
-# is excluded from the public mirror). Allow-list each file explicitly with
-# `git add -f`; do not add a broad `!cells/**/*.tfvars`.
+# Per-cell tfvars under cells/ are not published.
 
-# NOTE: .terraform.lock.hcl IS committed for this root module. pavo-bootstrap-aws
-# is a customer-applied root module distributed as a release artefact via the
-# sync-bootstrap-mirror workflow. Committing the lock file ensures every customer
-# `terraform init` against the same tag resolves identical provider versions —
-# without it, provider selection can drift across "identical" tagged releases.
+# .terraform.lock.hcl is committed on purpose: every `terraform init` against
+# the same tag resolves identical provider versions.

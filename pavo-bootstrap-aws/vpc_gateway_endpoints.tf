@@ -26,8 +26,7 @@
 # non-main route tables unconditionally. That no longer holds: on some cells
 # Omnistrate's endpoints already span non-main route tables too, and a route
 # table may carry only ONE gateway-endpoint route per service, so associating our
-# endpoint with an already-covered table fails the apply with RouteAlreadyExists
-# (an early customer bring-up).
+# endpoint with an already-covered table fails the apply with RouteAlreadyExists.
 #
 # ADAPTIVE MODEL — cover exactly the route tables Omnistrate does not:
 #

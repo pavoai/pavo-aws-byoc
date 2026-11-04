@@ -6,10 +6,10 @@
 
 | Store | Holds | Encryption at rest | In transit |
 |---|---|---|---|
-| RDS PostgreSQL | Application data | Cell key | Password auth over the VPC; this module does not set `rds.force_ssl` |
+| RDS PostgreSQL | Application data | Cell key | TLS forced by the default PostgreSQL 16 parameter group (`rds.force_ssl = 1`); password auth. Ingress is the EKS cluster SG |
 | RDS PostgreSQL for Temporal (`temporal_mode = "self_hosted"`) | Workflow state | Cell key | TLS (regional RDS root CA shipped to the pods) |
-| ElastiCache Redis (3 groups) | Caches and queues | Cell key on **new** groups; existing groups keep their previous key (`ignore_changes`) | `redis_security_phase` (default `off`). New private cells should pass `enforced` (TLS + AUTH) |
-| EFS | Shared files for the workloads | Cell key on **new** filesystems. Changing `kms_key_id` is ForceNew — do not apply on an existing filesystem. | File-system policy denies non-TLS and mounts without an access point. IAM-signed mounts: `efs_iam_auth_enforced` (default `false`). Ingress is the EKS cluster SG |
+| ElastiCache Redis (3 groups) | Caches and queues | Cell key on **new** groups; existing groups keep their previous key (`ignore_changes`) | `redis_security_phase` (default `off`). A strict instance must be created with `enforced` (TLS + AUTH; the plan fails otherwise); on standard posture Pavo passes `enforced` at create |
+| EFS | Shared files for the workloads | Cell key on **new** filesystems; existing filesystems keep their previous key (`ignore_changes`) | File-system policy denies non-TLS and mounts without an access point. IAM-signed mounts: `efs_iam_auth_enforced` (default `false`). Ingress is the EKS cluster SG |
 | S3 `onboarding` and `data` buckets | Uploaded and processed files | Cell key for **new objects**; existing objects stay SSE-S3 until rewritten | HTTPS |
 | S3 Elasticsearch snapshots (`es_mode = "self_hosted"`) | Search index snapshots | Cell key | HTTPS |
 | S3 identity state (`zitadel_mode = "self_hosted"`) | Terraform state for the identity Job | Cell key | HTTPS |
@@ -17,7 +17,7 @@
 | SNS topics (`data_fetcher`, `dedup`, `connector_sync`) | Fan-out to the queues | Cell key on **new** topics; existing topics keep their previous key (`ignore_changes`) | HTTPS |
 | EBS volumes on the `gp3-cmk` storage class (stage 1, with `enable_observability`) | The in-VPC observability stack | Cell key | — |
 | Node EBS default / keyless gp3 (stage 1) | Worker nodes and volumes created without an explicit key | Cell key (account+region default). Existing volumes keep their key until replaced | — |
-| Stage 1 Terraform state bucket | OpenTofu state | Cell key when `create-state-backend.sh` is passed the CMK | HTTPS |
+| Stage 1 Terraform state bucket | Terraform state | Cell key when `create-state-backend.sh` is passed the CMK | HTTPS |
 
 Buckets block public access, and versioning is on for the application and
 identity-state buckets (`terraform-omnistrate-aws/main.tf`,
@@ -31,21 +31,24 @@ identity-state buckets (`terraform-omnistrate-aws/main.tf`,
 | Application secrets (API keys, OAuth client secrets) | Pavo, through Omnistrate secrets | Kubernetes Secrets in the instance namespace | Listed as Pavo-managed secrets in [inputs-contract.md](inputs-contract.md) |
 | Identity OIDC client secret | Stage 3 | Passed to stage 2 as an input and out again as a sensitive output for the application's configuration | With self-hosted identity, the in-cluster Job produces it instead |
 | Your IdP client secret (self-hosted identity) | You, at onboarding | Kubernetes Secret in the instance namespace | Used only by the in-cluster identity Job |
-| Temporal payload codec key (optional) | Instance parameter `temporal_payload_codec_key` | Kubernetes Secret | Encrypts workflow payloads |
-| Generated tokens (worker API secret, capability tokens, VAPID key) | Terraform `random_password` / `tls_private_key` | Kubernetes Secrets, and Terraform state | |
+| Temporal payload codec key (optional) | Instance parameter `temporal_payload_codec_key` | Kubernetes Secret, Terraform state, and a stage 2 output that Omnistrate reads to render the charts | Encrypts workflow payloads |
+| Generated tokens (worker API secret, capability tokens, VAPID key) | Terraform `random_password` / `tls_private_key` | Kubernetes Secrets, Terraform state, and stage 2 outputs that Omnistrate reads to render the charts | |
 | Grafana admin and database passwords (`enable_observability`) | Terraform `random_password` in stage 1 | Kubernetes Secrets, and your stage 1 state | |
 
 Terraform state contains the generated secrets above. Stage 1 state is in your
-S3 backend; stage 2 state is managed by Omnistrate.
+S3 backend; stage 2 state is managed by Omnistrate and stored as Kubernetes
+Secrets in the cell's `omnistrate-terraform` namespace (see architecture.md).
 
 ## What leaves your account
 
 Depending on modes and flags (see [network-and-egress.md](network-and-egress.md)):
 
 - **Search data** goes to Elastic Cloud with `es_mode = "cloud"`.
-- **Metrics and dashboards** stay in the VPC with the default
-  `grafana_mode = "self_hosted"`. They go to Grafana Cloud only when
-  `grafana_mode` is set to `cloud`.
+- **Metrics and dashboards** go to Grafana Cloud with the default
+  `grafana_mode = "cloud"`. They stay in the VPC with
+  `grafana_mode = "self_hosted"`. strict requires `grafana_mode = self_hosted` at
+  instance creation (and likewise `es_mode`, `temporal_mode` and
+  `zitadel_mode`); the plan fails otherwise.
 - **Workflow payloads** go to Temporal Cloud with `temporal_mode = "cloud"`,
   encrypted with the payload codec key when one is set.
 - **User identity** is held in Pavo's identity service with
@@ -60,4 +63,4 @@ Depending on modes and flags (see [network-and-egress.md](network-and-egress.md)
 - **Sandbox file mounts** use a Google Cloud Storage service account only if
   `sandbox_gcsfuse_enabled` is set.
 
-Bedrock calls stay in your account's region over PrivateLink.
+Bedrock calls enter through the PrivateLink endpoint in your region (with VPC endpoints enabled, the default). Claude models are invoked through AWS's US cross-region inference profiles (us.*), so a request may be processed in us-east-1, us-east-2 or us-west-2; it stays within US AWS regions.

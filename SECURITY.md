@@ -20,8 +20,9 @@ through your Pavo contact.
 
 ## Verifying Pavo images
 
-Every `ghcr.io/pavoai/*` image the modules deploy is signed with Sigstore
+Every Pavo-built `ghcr.io/pavoai/*` image the modules deploy is signed with Sigstore
 cosign (keyless), with SBOM and vulnerability attestations on the same digest.
-Your cluster checks the signature at admission; see
-[docs/permissions.md](docs/permissions.md#image-admission) for the policy and
-how to verify an image yourself.
+Admission checks the signature only on pulls by `ghcr.io` name. Every cell
+pulls the same digests from Pavo's ECR mirror, and admission does not check
+those names today; the control there is the digest pin. See [docs/permissions.md](docs/permissions.md#image-admission) for the
+policy and how to verify an image yourself.

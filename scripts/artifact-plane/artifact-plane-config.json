@@ -1,0 +1,126 @@
+{
+  "store": {
+    "account_id": "493807289773",
+    "region": "us-east-2"
+  },
+  "provider_mirror": {
+    "release": "20260928-1",
+    "regions": ["us-east-1", "us-east-2"]
+  },
+  "image_manifests": [
+    "pavo-bootstrap-aws/mirrored-images.json"
+  ],
+  "static_images": [
+    {
+      "source": "registry.k8s.io/pause:3.9",
+      "digest": "sha256:7031c1b283388d2c2e09b57badb803c05ebed362dc88d84b480cc47f72a21097"
+    },
+    {
+      "source": "registry.k8s.io/ingress-nginx/controller:v1.15.1",
+      "digest": "sha256:594ceea76b01c592858f803f9ff4d2cb40542cae2060410b2c95f75907d659e1"
+    },
+    {
+      "source": "registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.6.9",
+      "digest": "sha256:01038e7de14b78d702d2849c3aad72fd25903c4765af63cf16aa3398f5d5f2dd"
+    },
+    {
+      "source": "docker.io/library/busybox:1.35",
+      "digest": "sha256:98ad9d1a2be345201bb0709b0d38655eb1b370145c7d94ca1fe9c421f76e245a"
+    },
+    {
+      "source": "docker.io/library/busybox:1.36",
+      "digest": "sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
+    },
+    {
+      "source": "docker.io/edoburu/pgbouncer:v1.25.1-p0",
+      "digest": "sha256:4a8371e79d6627e74f553d0aaa8e4c5ace20e30034fb296e569b71c89c99e108"
+    },
+    {
+      "source": "docker.io/otel/opentelemetry-collector-contrib:0.158.0",
+      "digest": "sha256:c5918f78992ee73b0d6f0e599423ac5ec52dd5d9726733114d6eca53d5a32ed5"
+    },
+    {
+      "source": "docker.elastic.co/elasticsearch/elasticsearch:8.19.5",
+      "digest": "sha256:86d0a30f420470d9cd4102cdf380c5a458bd6ccbbd3f54f7332d3b0b562431b8"
+    },
+    {
+      "source": "docker.elastic.co/kibana/kibana:8.19.5",
+      "digest": "sha256:55730ce4291cddc28ef700c9fbb9c337c8dee50b7f86d4640bcd82363f1fb92b"
+    },
+    {
+      "source": "quay.io/prometheuscommunity/elasticsearch-exporter:v1.7.0",
+      "digest": "sha256:4786d49bef9ec045c155d5544abc420e6f58394170db7b6a05c5e7a5f15fb9ed"
+    },
+    {
+      "source": "quay.io/prometheuscommunity/prom-label-proxy:v0.8.1",
+      "digest": "sha256:3ac01e2b4ab27be4ba01d3ecc9d558eab3bfdf76f91f32277cc5e3923e4f75b6"
+    },
+    {
+      "source": "public.ecr.aws/docker/library/postgres:16-alpine",
+      "digest": "sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea"
+    },
+    {
+      "source": "public.ecr.aws/nginx/nginx:1.29-alpine",
+      "digest": "sha256:72c9b856fee09b02f9e5ee29ab2b55ae9a3c3b59cf094baef1d05f5914d8cb17"
+    },
+    {
+      "source": "ghcr.io/pavoai/mirror/temporalio/server:1.31.2",
+      "digest": "sha256:b5ecdb8282bededae2a10c36e8d862e27d0bc2d247fc73c5416025997ab4a1da"
+    },
+    {
+      "source": "ghcr.io/pavoai/mirror/temporalio/admin-tools:1.31.2",
+      "digest": "sha256:dbc5fcd6ee8f0f4d808bf765af9a87dea9d8a283abfdcfbd2fc148496ba66107"
+    },
+    {
+      "source": "ghcr.io/pavoai/mirror/temporalio/ui:2.53.0",
+      "digest": "sha256:810eba47f77a89b0e64e2e751478ca585d037bbd90c0951a2974a92a6c5adeb9"
+    },
+    {
+      "source": "ghcr.io/pavoai/intern@sha256:66b384d00ef91bf466403addf640fc5205026d2a93ab6ab0e2698f33950f7228",
+      "digest": "sha256:66b384d00ef91bf466403addf640fc5205026d2a93ab6ab0e2698f33950f7228"
+    },
+    {
+      "source": "ghcr.io/pavoai/zitadel-provisioner@sha256:29d4197153e4621201537ea72c06631387ac143eb97bd69929a70ad224bc4ef3",
+      "digest": "sha256:29d4197153e4621201537ea72c06631387ac143eb97bd69929a70ad224bc4ef3"
+    },
+    {
+      "source": "ghcr.io/zitadel/zitadel@sha256:32834d46240c5ece9f86c5e5f706b167c2064fba76bbf9213e3494023c38ca5d",
+      "digest": "sha256:32834d46240c5ece9f86c5e5f706b167c2064fba76bbf9213e3494023c38ca5d"
+    },
+    {
+      "source": "docker.io/alpine/k8s@sha256:66dd3f7db6c4cf152b688d83aad11ceed9eb2da0c4e7de1034c7d4ccea1b55ef",
+      "digest": "sha256:66dd3f7db6c4cf152b688d83aad11ceed9eb2da0c4e7de1034c7d4ccea1b55ef"
+    },
+    {
+      "source": "docker.io/curlimages/curl@sha256:a73e4b2a41674e127042302efd0c237a44b029ca616d640945597666cddf53ca",
+      "digest": "sha256:a73e4b2a41674e127042302efd0c237a44b029ca616d640945597666cddf53ca"
+    }
+  ],
+  "static_charts": [
+    {
+      "source": "oci://ghcr.io/pavoai/charts/pavo-compute-anchor",
+      "name": "pavo-compute-anchor",
+      "version": "0.1.0"
+    },
+    {
+      "source": "oci://registry.k8s.io/ingress-nginx/charts/ingress-nginx",
+      "name": "ingress-nginx",
+      "version": "v4.15.1"
+    },
+    {
+      "source": "https://go.temporal.io/helm-charts",
+      "name": "temporal",
+      "version": "1.6.0",
+      "sha256": "4ea557365bca72e635ae82fc4a93d586df238946e5d5a19eb32a8a24748449f9"
+    }
+  ],
+  "service_charts": {
+    "api-gateway": "oci://ghcr.io/pavoai/api-gateway/api-gateway",
+    "intern": "oci://ghcr.io/pavoai/intern/intern",
+    "frontend": "oci://ghcr.io/pavoai/frontend/frontend",
+    "onboarding-copy": "oci://ghcr.io/pavoai/onboarding-copy/onboarding-copy",
+    "tribal-knowledge": "oci://ghcr.io/pavoai/tribal-knowledge/tribal-knowledge",
+    "capability-proxy": "oci://ghcr.io/pavoai/system-and-services/capability-proxy",
+    "exec-runner": "oci://ghcr.io/pavoai/system-and-services/exec-runner"
+  }
+}

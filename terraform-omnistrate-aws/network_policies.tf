@@ -11,10 +11,9 @@
 # (var.instance_id). Platform/control-plane namespaces (kube-system, cert-manager,
 # external-secrets, cosign-system, elastic-system, pavo-observability) are NOT
 # governed here — they carry their own policies or are control-plane exceptions.
-# So "default-deny egress" here means namespace-scoped, NOT cell-wide; say it that
-# way to customers. A cell-wide posture additionally needs the cosign admission
-# path off public Sigstore (see COSIGN-OFFLINE-SPIKE.md) and an egress path for
-# the alert forwarder, neither of which is in this change.
+# So "default-deny egress" here means namespace-scoped, NOT cell-wide. A
+# cell-wide posture additionally needs the cosign admission path off public
+# Sigstore and an egress path for the alert forwarder, neither of which is here.
 # Ingress isolation is deliberately out of scope (this is external-egress default
 # deny / a VPC-contained posture, not east-west microsegmentation).
 #
@@ -64,7 +63,7 @@ locals {
 # `ReadOnlyDescribeList` statement in pavo-bootstrap-aws/policy-statements.json,
 # which carries no `scope` — and absent scope means SHARED, i.e. both the workload
 # boundary and the runner policy (spec CUSTOM_TERRAFORM_POLICY, kept in sync by
-# sync-policy-to-spec.py). So strict needs no new IAM.
+# Pavo's spec-sync script). So strict needs no new IAM.
 #
 # If that statement is ever narrowed to scope="boundary", this data source loses
 # its permission and EVERY strict plan fails before the policy is created.
@@ -81,26 +80,15 @@ data "aws_prefix_list" "s3" {
 resource "kubectl_manifest" "strict_egress" {
   count = local.strict_count
 
-  # Fail-fast on the two cell capabilities a strict instance cannot work without,
-  # each naming the pavo-bootstrap-aws flag the operator has to flip. Same shape
-  # as the eck_ready precondition — the gate is the tolerant SSM listing in
-  # cell_gates.tf, so an unbootstrapped cell produces these messages rather than a
+  # Fail-fast on the cell capability a strict instance cannot work without,
+  # naming the pavo-bootstrap-aws flag the operator has to flip. Same shape as
+  # the eck_ready precondition — the gate is the tolerant SSM listing in
+  # cell_gates.tf, so an unbootstrapped cell produces this message rather than a
   # bare "couldn't find resource" from a failed parameter read.
   #
-  # These also fire on an ALREADY-CREATED strict instance whose cell later drops
-  # either capability, which is the intended true->false hazard signal.
+  # Also fires on an ALREADY-CREATED strict instance whose cell later drops the
+  # capability, which is the intended true->false hazard signal.
   lifecycle {
-    precondition {
-      condition     = local.private_ca_ready_present
-      error_message = <<-EOT
-        network_posture = "strict" requires the in-cell private CA on cell
-        ${var.eks_cluster_name}, but ${local.private_ca_ready_name} does not exist.
-
-        FIX: re-run pavo-bootstrap-aws for this cell with install_private_ca = true,
-        then retry this deployment. The cell publishes that parameter only after the
-        pavo-private-ca ClusterIssuer is actually Ready.
-      EOT
-    }
     precondition {
       condition     = local.network_policy_ready_present
       error_message = <<-EOT

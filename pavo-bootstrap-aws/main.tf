@@ -2,7 +2,7 @@ data "aws_caller_identity" "current" {}
 
 # ============================================================================
 # Workload permission boundary — driven by policy-statements.json (single
-# source of truth, also surfaced into spec/spec-byoc.yaml by CI).
+# source of truth, also surfaced into the Omnistrate service spec by Pavo CI).
 # ============================================================================
 locals {
   policy_statements = jsondecode(file("${path.module}/policy-statements.json"))
@@ -13,8 +13,11 @@ locals {
   # them, and including them blew the boundary past the 6144 IAM policy-size cap.
   # scope="runner" → runner policy only (spec CUSTOM_TERRAFORM_POLICY); the
   # runner role is not bounded by this boundary. Absent scope = shared (both).
+  # "posture" (boundary-only) keeps a statement only on cells of that posture;
+  # strict cells drop the MicroVM ceiling. Absent = every posture.
   boundary_statements = [
-    for s in local.policy_statements : s if lookup(s, "scope", "shared") != "runner"
+    for s in local.policy_statements : s
+    if lookup(s, "scope", "shared") != "runner" && contains([var.network_posture, "any"], lookup(s, "posture", "any"))
   ]
 
   # The bootstrap operators (ESO, ECK, policy-controller, reloader) are cluster
@@ -74,8 +77,8 @@ resource "aws_iam_policy" "pavo_permission_boundary" {
   lifecycle {
     # Fail-closed on an unsupported "scope": a typo (e.g. "runer") must NOT
     # silently route a statement into the wrong policy. Allowed values:
-    # shared | runner | boundary (absent = shared). Mirrored in
-    # scripts/render-policy.sh and scripts/sync-policy-to-spec.py.
+    # shared | runner | boundary (absent = shared). Mirrored in Pavo's render
+    # and spec-sync scripts.
     precondition {
       condition = alltrue([
         for s in local.policy_statements :
@@ -270,22 +273,20 @@ resource "aws_ssm_parameter" "permission_boundary_arn" {
 # ============================================================================
 # Single-cell-per-account sentinel
 # ============================================================================
-# The existing bootstrap module mixes account-scoped resources (workload + EBS
-# CSI permission boundaries, `/pavo/shared/*` SSM) with cell-scoped resources
+# The existing bootstrap module mixes account-scoped resources (workload
+# permission boundary, `/pavo/shared/*` SSM) with cell-scoped resources
 # (per-cluster ESO role, the new K8s/Helm/EKS-access stack below). A second
 # bootstrap apply in the same AWS account — meant for a second cell — would
 # silently collide on the account-scoped names.
 #
 # The sentinel is the hard guard: AWS returns `ParameterAlreadyExists` on the
 # fixed name when a second cell tries to create it, failing the apply BEFORE
-# any IAM boundary, role, or K8s resource is touched. `prevent_destroy = true`
-# requires a conscious operator action to drop it (see README → "Recovering
-# from a misconfigured cell" + Phase 1 rollback notes in the design doc).
+# any IAM boundary or role in this file is touched. `prevent_destroy = true`
+# requires a conscious operator action to drop it.
 #
-# Every account-shared or cell-shared resource in this module gets an explicit
-# `depends_on = [aws_ssm_parameter.single_cell_guard]` so the sentinel is the
-# first thing Terraform tries to create. Broad-by-design — guardrail, not
-# abstraction contest.
+# The IAM boundaries and roles in this file get an explicit
+# `depends_on = [aws_ssm_parameter.single_cell_guard]` so the sentinel is
+# created before them. Broad-by-design — guardrail, not abstraction contest.
 #
 # The structural fix is to split bootstrap into account-scoped + cell-scoped
 # modules; tracked as a follow-up. Until then, the sentinel + this README
@@ -294,7 +295,7 @@ resource "aws_ssm_parameter" "single_cell_guard" {
   name        = "/pavo/shared/bootstrap_cell"
   type        = "String"
   value       = local.eks_cluster_name
-  description = "Single-cell-per-account sentinel. See pavo-bootstrap-aws/main.tf and README → Ownership rules."
+  description = "Single-cell-per-account sentinel. See pavo-bootstrap-aws/main.tf."
 
   lifecycle {
     prevent_destroy = true
@@ -485,9 +486,10 @@ resource "aws_ssm_parameter" "network_policy_ready" {
   # sentinel. Without it this marker has no dependencies at all, so Terraform
   # can create it in parallel with the guard — and an apply that the guard
   # rejects would still leave a readiness marker a strict instance can consume.
-  # eck_ready and private_ca_ready get this transitively through the workloads
-  # they wait on; this one is a bare parameter, so it needs it stated.
-  depends_on = [aws_ssm_parameter.single_cell_guard]
+  # eck_ready gets this transitively through the workloads it waits on; this
+  # one is a bare parameter, so it needs it stated. Strict ingresses point at
+  # pavo-selfsigned, so the gate must not exist before the issuer does.
+  depends_on = [aws_ssm_parameter.single_cell_guard, kubectl_manifest.pavo_selfsigned]
 }
 
 # connector_assumable_role_arns / strict_egress_extra_destinations (cell -> instance):
@@ -529,14 +531,14 @@ resource "aws_ssm_parameter" "strict_egress_extra_destinations" {
 # It does NOT mean the stack is running. The observability workloads carry
 # wait = false / wait_for_rollout = false on purpose, because on a brand-new cell
 # they legitimately cannot schedule until Omnistrate creates worker nodes, and
-# blocking the customer's Phase-3 apply on that is what forced the manual
-# two-phase toggle during an early customer onboarding.
+# blocking the customer's bootstrap apply on that would force a manual
+# two-phase toggle.
 #
 # So this parameter answers "is there supposed to be a receiver here?", which is
 # what an instance needs in order to fail fast on a misconfiguration
 # (grafana_mode = self_hosted against a cell that was never bootstrapped for it).
 # Whether the stack actually CONVERGED is asserted separately, once, by the
-# Phase-4 barrier in terraform-omnistrate-aws/observability_readiness.tf — which
+# barrier in terraform-omnistrate-aws/observability_readiness.tf — which
 # runs from outside this cluster and can therefore see failures the in-cluster
 # monitoring cannot report about itself.
 resource "aws_ssm_parameter" "observability_ready" {
@@ -604,8 +606,8 @@ resource "helm_release" "stakater_reloader" {
 # kube-system/ebs-csi-controller-sa ServiceAccount, and the lease RBAC. That
 # role is already bounded (omnistrate-bootstrap-permissions-boundary) AND now
 # carries the customer-CMK KMS permissions (kms:CreateGrant + crypto, scoped by
-# kms:ViaService=ec2 and aws:ResourceTag/omnistrate.com/customer-managed-kms —
-# Omnistrate's Option 1A; see the CMK onboarding section in README.md).
+# kms:ViaService=ec2 and aws:ResourceTag/omnistrate.com/customer-managed-kms;
+# see RUNBOOKS.md → Setting up the CMK).
 #
 # So this module manages NONE of the driver's role/SA/RBAC. Re-owning it caused
 # a reconcile tug-of-war, and re-annotating the SA to a Pavo role (which has NO
@@ -709,24 +711,45 @@ resource "kubectl_manifest" "pavo_letsencrypt_prod" {
   ]
 }
 
+# Strict cells: the NLB terminates TLS with the ACM cert (pavoCert) and re-encrypts
+# to nginx without validating it, so the ingress leaf only has to exist. ACME
+# can't issue there (no egress), a self-signed leaf per ingress is enough.
+resource "kubectl_manifest" "pavo_selfsigned" {
+  server_side_apply = true
+  force_conflicts   = true
+  field_manager     = "terraform"
+  apply_only        = true # see IngressClass comment block
+
+  yaml_body = yamlencode({
+    apiVersion = "cert-manager.io/v1"
+    kind       = "ClusterIssuer"
+    metadata   = { name = "pavo-selfsigned" }
+    spec       = { selfSigned = {} }
+  })
+
+  depends_on = [
+    aws_ssm_parameter.single_cell_guard,
+    time_sleep.wait_for_eks_access,
+  ]
+}
+
 # ============================================================================
 # Sigstore Policy Controller + per-service ClusterImagePolicies (cell-scoped)
 # ============================================================================
 # The policy controller is a cluster-wide admission webhook. Per the ownership
-# rule "no cluster-scoped K8s resource may live in terraform-omnistrate-aws"
-# (README → Hard rules), both the controller helm release and the per-service
+# rule "no cluster-scoped K8s resource may live in terraform-omnistrate-aws",
+# both the controller helm release and the per-service
 # ClusterImagePolicy resources are owned here in cell-bootstrap, not pavoInfra.
 # pavoInfra only adds the `policy.sigstore.dev/include = "true"` label to each
 # per-instance namespace; the controller picks up labeled namespaces dynamically.
 #
 # Service list + image globs come from `image-manifest.json` vendored alongside
-# this file (the canonical source is `spec/image-manifest.json`; we vendor
-# because customers apply this module standalone — the wider repo isn't shipped
-# to them). Keep `pavo-bootstrap-aws/image-manifest.json` in sync with
-# `spec/image-manifest.json` when adding a new service.
+# this file (the canonical source lives in Pavo's private repo; we vendor
+# because customers apply this module standalone). Pavo keeps the two in sync
+# when adding a new service.
 #
 # Per-service signer SAs (cloud-build-<service>@<central_ci_project_id>) are
-# provisioned by `central-ci/`. During the migration window the shared
+# provisioned by Pavo's CI project. During the migration window the shared
 # `cloud-build@...` SA is also accepted (the `pavo-cloud-build-shared-transition`
 # authority below) — drop that entry once every Pavo service has been re-signed
 # under its per-service SA.

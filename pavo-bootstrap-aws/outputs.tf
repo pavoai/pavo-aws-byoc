@@ -4,7 +4,7 @@ output "eso_role_arn" {
 }
 
 output "permission_boundary_arn" {
-  description = "ARN of the workload IAM permission boundary (attached to pavo-role-*)."
+  description = "ARN of the workload IAM permission boundary (attached to every IAM role the instance module creates)."
   value       = aws_iam_policy.pavo_permission_boundary.arn
 }
 
@@ -34,7 +34,7 @@ output "microvm_build_boundary_arn" {
 }
 
 output "vpc_interface_endpoint_ids" {
-  description = "Cell-scoped Interface VPC endpoint IDs (kms / secretsmanager / iam / rds / elasticache / sns / sqs / elasticfilesystem / email), keyed by service. Empty when every service already has a foreign private-DNS endpoint."
+  description = "Cell-scoped Interface VPC endpoint IDs, keyed by service. Empty when every service already has a foreign private-DNS endpoint."
   value       = { for svc, ep in aws_vpc_endpoint.interface : svc => ep.id }
 }
 

@@ -40,6 +40,17 @@
       ]
     },
     {
+      "Sid": "DenyTerraformStateBucket",
+      "Effect": "Deny",
+      "Action": [
+        "s3:*"
+      ],
+      "Resource": [
+        "arn:aws:s3:::pavo-tf-state-*",
+        "arn:aws:s3:::pavo-tf-state-*/*"
+      ]
+    },
+    {
       "Sid": "SNS",
       "Effect": "Allow",
       "Action": [

@@ -2,23 +2,24 @@
 # -----------------------------------------------------------------------------
 # pavo-bootstrap-aws — create the per-cell customer-managed KMS key (CMK)
 # -----------------------------------------------------------------------------
-# Creates the ONE CMK a Pavo cell uses to encrypt everything: RDS storage, the
-# RDS-managed master-password Secrets Manager secret, and (on self-hosted cells)
-# the Elasticsearch / in-VPC-observability EBS volumes. Its ARN is the instance
-# `cell_kms_key_arn` apiParameter.
+# Creates the ONE CMK a Pavo cell uses to encrypt everything: RDS storage and
+# its master-password secret, Redis, SNS, SQS, EFS, the app S3 buckets, ES
+# snapshots, identity state, the in-VPC-observability EBS volumes and the
+# account EBS default. Its ARN is the instance `cell_kms_key_arn` apiParameter.
 #
-# This creates a plain symmetric key with the DEFAULT key policy (root -> kms:*).
-# That is sufficient whenever the workload + ESO roles live in the SAME account
-# (same-account cells): their IAM policies grant key use, so NO
-# key-policy statements are needed. For a LOCKED-DOWN customer key that does not
-# delegate to account root, do NOT use this script — follow the 8-statement key
-# policy in RUNBOOKS.md "Setting up the CMK".
+# This creates a plain symmetric key with the DEFAULT key policy (root -> kms:*)
+# plus one statement merged in by Sid, AllowSNSToSQSUnderCellKey, so SNS can
+# deliver into the CMK-encrypted SQS queues (only the key policy can grant a
+# service principal). Same-account workload + ESO roles get key use from IAM,
+# so no other statement is needed. For a LOCKED-DOWN customer key that does not
+# delegate to account root, do NOT use this script — follow the key policy in
+# RUNBOOKS.md "Explicit key policy".
 #
 # Idempotent via the alias `alias/pavo-<name>`: re-running adopts the existing key.
 #
 # Usage:
 #   AWS_PROFILE=<account-profile> ./scripts/create-cmk.sh <cell-or-customer-name> [region]
-#     e.g. AWS_PROFILE=pavo-multitenant-test ./scripts/create-cmk.sh awsmultitenanttest
+#     e.g. AWS_PROFILE=<profile> ./scripts/create-cmk.sh <cell-name>
 #     region defaults to us-east-1.
 # -----------------------------------------------------------------------------
 set -euo pipefail
@@ -111,7 +112,8 @@ ALIAS_ARN="${KEY_ARN%:key/*}:${ALIAS}"
 
 cat <<EOF
 
-Done. Set the instance apiParameter cell_kms_key_arn to either form:
+Done. Set the instance apiParameter cell_kms_key_arn to either form
+(pavo-bootstrap-aws's cell_kms_key_arn takes the key ARN only):
   key ARN   : ${KEY_ARN}
   alias ARN : ${ALIAS_ARN}
 

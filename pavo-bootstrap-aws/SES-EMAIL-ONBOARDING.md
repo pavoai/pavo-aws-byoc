@@ -54,4 +54,4 @@ instance's plan shows no SES identity / endpoint (AWS) and that
 
 Instances that previously set `enable_email_login = false` (self-hosted
 IdP-only) map to `email_enabled = false`. Cloud instances that relied on the old
-"cloud is always on" behavior need no change: `email_enabled` defaults to `true`.
+"cloud is always on" behavior need no change: an unset `email_enabled` derives to on for them.

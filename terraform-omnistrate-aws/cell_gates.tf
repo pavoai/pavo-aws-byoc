@@ -9,8 +9,8 @@
 # A TOLERANT lookup on purpose. The obvious form, data.aws_ssm_parameter on the
 # exact name, errors during the READ when the parameter is absent, so the plan
 # dies with a bare "couldn't find resource" that never names the flag the operator
-# has to flip and leaves them nothing to act on. That is what a real onboarding
-# hit. Reading the path instead returns an empty list rather than erroring, which
+# has to flip and leaves them nothing to act on.
+# Reading the path instead returns an empty list rather than erroring, which
 # lets each consumer's precondition produce a message that names the fix.
 #
 # with_decryption = false: we only need to know a NAME exists, and decrypted
@@ -21,8 +21,8 @@
 # gates below, all derived from instance parameters, but the connector values at
 # the bottom of this file render IAM and the strict egress policy and must not
 # depend on instance parameters: an early phase of every deploy renders without
-# them (0b5f9db: a grant gated on instance parameters was revoked for 79 and 28
-# minutes that way). The read is covered by the shared SSMRead statement on
+# them (a grant gated on instance parameters is revoked during every deploy
+# that way). The read is covered by the shared SSMRead statement on
 # /pavo/* in pavo-bootstrap-aws/policy-statements.json, the same grant
 # data.aws_ssm_parameter.permission_boundary_arn already needs on every
 # instance. A path with no parameters returns an empty listing, not an error.
@@ -44,12 +44,10 @@ locals {
 
   eck_ready_name            = "/pavo/cells/${var.eks_cluster_name}/eck_ready"
   observability_ready_name  = "/pavo/cells/${var.eks_cluster_name}/observability_ready"
-  private_ca_ready_name     = "/pavo/cells/${var.eks_cluster_name}/private_ca_ready"
   network_policy_ready_name = "/pavo/cells/${var.eks_cluster_name}/network_policy_ready"
 
   eck_ready_present            = contains(local.cell_param_names, local.eck_ready_name)
   observability_ready_present  = contains(local.cell_param_names, local.observability_ready_name)
-  private_ca_ready_present     = contains(local.cell_param_names, local.private_ca_ready_name)
   network_policy_ready_present = contains(local.cell_param_names, local.network_policy_ready_name)
 }
 

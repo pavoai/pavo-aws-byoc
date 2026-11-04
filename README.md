@@ -5,17 +5,18 @@ into your AWS account, published so your security team can review it. It is
 generated from Pavo's private source repository. Nothing here is consumed
 directly: it isn't used by the installer, by Omnistrate, or by any release.
 
-- Snapshot of private commit `cbc09288c06f`, published 2026-10-20T14:54:46Z.
+- Snapshot of private commit `478452196fb5`, published 2026-11-04T19:15:36Z.
 - `PROVENANCE.json` lists the SHA-256 of every file and the commit it came from.
 - Pull requests and issues aren't accepted here. To report a security issue,
   see [SECURITY.md](SECURITY.md).
 
-## The two modules
+## The modules
 
 | Module | Applied by | Files |
 |---|---|---|
-| [`pavo-bootstrap-aws/`](pavo-bootstrap-aws/) | customer | 44 |
-| [`terraform-omnistrate-aws/`](terraform-omnistrate-aws/) | omnistrate | 22 |
+| [`pavo-bootstrap-aws/`](pavo-bootstrap-aws/) | customer | 41 |
+| [`pavo-cert-aws/`](pavo-cert-aws/) | omnistrate | 4 |
+| [`terraform-omnistrate-aws/`](terraform-omnistrate-aws/) | omnistrate | 23 |
 
 A deployment runs them in this order:
 
@@ -27,7 +28,9 @@ A deployment runs them in this order:
 2. **[`terraform-omnistrate-aws/`](terraform-omnistrate-aws/)** — Omnistrate's
    runner applies it in your account for each Pavo instance. It creates the
    instance's data stores (RDS, ElastiCache, S3, EFS, SQS/SNS), its IAM roles,
-   and its Kubernetes namespace and secrets.
+   and its Kubernetes namespace and secrets. On a strict cell the runner first
+   applies [`pavo-cert-aws/`](pavo-cert-aws/), which requests the ACM
+   certificate the internal load balancer presents; stage 2 waits for it to issue.
 
 Identity setup (Zitadel org, project, OIDC app, optional IdP) is applied by
 Pavo, or by an in-cluster Job when you self-host Zitadel. That module is not
@@ -59,7 +62,7 @@ This copy is not signed, and nothing ties a running deployment to it:
   after this snapshot.
 - You apply `pavo-bootstrap-aws` from the `pavoai/pavo-bootstrap-aws`
   repository at the version you pin, which may differ from this snapshot.
-- With self-hosted identity, the identity Job runs from the signed
+- With self-hosted identity, the identity Job runs from the
   `zitadel-provisioner` image, which is built separately from this copy.
 
 This repository has no licence. You may read it; it grants no right to reuse,

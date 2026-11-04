@@ -1,0 +1,19 @@
+applications:
+  query-service:
+    image:
+      tag: "4a32eb1febc0203ceba250ae6bde78035c316fab"
+  entity-tribal:
+    image:
+      tag: "4a32eb1febc0203ceba250ae6bde78035c316fab"
+  tribal-generator:
+    image:
+      tag: "4a32eb1febc0203ceba250ae6bde78035c316fab"
+  data-task-generator:
+    image:
+      tag: "4a32eb1febc0203ceba250ae6bde78035c316fab"
+  pre-aggregate-generator:
+    image:
+      tag: "4a32eb1febc0203ceba250ae6bde78035c316fab"
+  gcc-generator:
+    image:
+      tag: "4a32eb1febc0203ceba250ae6bde78035c316fab"

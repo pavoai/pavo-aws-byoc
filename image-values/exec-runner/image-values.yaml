@@ -1,0 +1,5 @@
+image:
+  tag: "84a3fd002caed31dea4941419db460697437336e"
+workerPool:
+  image:
+    tag: "84a3fd002caed31dea4941419db460697437336e"

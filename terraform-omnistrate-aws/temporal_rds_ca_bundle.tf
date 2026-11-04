@@ -9,7 +9,7 @@
 #   - Omnistrate's git ingestion materializes ONLY .tf files onto the
 #     tf-executor, so a repo data file (files/*.pem) is absent there and a
 #     constant-arg file() breaks plan for EVERY cell at validate time, even
-#     count-gated (live cell, 2026-08-10).
+#     count-gated (seen on a live cell).
 #   - A plan-time fetch would need tf-executor egress, which default-deny
 #     cells restrict; a pinned, reviewed root is also the right posture for
 #     regulated zero-egress customers — no trust anchor changing under us.

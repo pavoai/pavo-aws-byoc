@@ -56,6 +56,16 @@
     ]
   },
   {
+    "sid": "DenyTerraformStateBucket",
+    "comment": "The stage-1 state bucket (create-state-backend.sh default pavo-tf-state-<account>) matches the S3 grant above. Nothing Pavo-run reads it: stage 2 takes cell facts from SSM, never from remote state.",
+    "effect": "Deny",
+    "actions": ["s3:*"],
+    "resources": [
+      "arn:aws:s3:::pavo-tf-state-*",
+      "arn:aws:s3:::pavo-tf-state-*/*"
+    ]
+  },
+  {
     "sid": "SNS",
     "effect": "Allow",
     "actions": ["sns:*"],
@@ -145,6 +155,37 @@
     }
   },
   {
+    "sid": "ACMRequestCertificateWithRequestTag",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": ["acm:RequestCertificate"],
+    "resources": ["*"],
+    "conditions": {
+      "StringEquals": {
+        "aws:RequestTag/managed_by": "pavo"
+      }
+    }
+  },
+  {
+    "sid": "ACMTaggedPavoCertificates",
+    "scope": "runner",
+    "effect": "Allow",
+    "actions": [
+      "acm:DescribeCertificate",
+      "acm:GetCertificate",
+      "acm:ListTagsForCertificate",
+      "acm:AddTagsToCertificate",
+      "acm:RemoveTagsFromCertificate",
+      "acm:DeleteCertificate"
+    ],
+    "resources": ["arn:aws:acm:*:*:certificate/*"],
+    "conditions": {
+      "StringEquals": {
+        "aws:ResourceTag/managed_by": "pavo"
+      }
+    }
+  },
+  {
     "sid": "EKSAccessAndDescribe",
     "scope": "runner",
     "effect": "Allow",
@@ -179,6 +220,7 @@
   {
     "sid": "LambdaMicrovmsLifecycle",
     "scope": "boundary",
+    "posture": "standard",
     "effect": "Allow",
     "actions": [
       "lambda:RunMicrovm",
@@ -199,8 +241,9 @@
   },
   {
     "sid": "LambdaMicrovmsPassConnector",
-    "comment": "Resource MUST be '*': RunMicrovm implicitly attaches the INTERNET_EGRESS network connector and the authorizer checks lambda:PassNetworkConnector against it, but rejects every resource-scoped form of that ARN (the implicit connector exposes no stable account-scoped ARN to name). Without this, RunMicrovm fails AccessDenied even when the lifecycle grants are correct. This is a ceiling, not a grant: it only caps what an identity policy may allow. The matching identity-policy statement in terraform-omnistrate-aws/main.tf is UNCONDITIONAL as of the 2026-08-18 deploy-window fix (gating it on the per-instance enable_lambda_microvms parameter revoked the grants for 28-79 minutes on every deploy), so the effective permission of a workload role is decided here. Note this entry is itself unconditional, so every account bootstrapped from this version raises the ceiling - it is NOT a per-account opt-in; accounts whose boundary predates it cap those identity grants to nothing.",
+    "comment": "Resource MUST be '*': RunMicrovm implicitly attaches the INTERNET_EGRESS network connector and the authorizer checks lambda:PassNetworkConnector against it, but rejects every resource-scoped form of that ARN (the implicit connector exposes no stable account-scoped ARN to name). Without this, RunMicrovm fails AccessDenied even when the lifecycle grants are correct. This is a ceiling, not a grant: it only caps what an identity policy may allow. The matching identity-policy statement in terraform-omnistrate-aws/main.tf is UNCONDITIONAL (gating it on the per-instance enable_lambda_microvms parameter revoked the grants during every deploy), so the effective permission of a workload role is decided here. posture=standard: a strict cell's boundary omits this and LambdaMicrovmsLifecycle, so MicroVMs (and their internet connector) are denied there regardless of identity grants. Accounts whose boundary predates these entries also cap those grants to nothing.",
     "scope": "boundary",
+    "posture": "standard",
     "effect": "Allow",
     "actions": [
       "lambda:PassNetworkConnector"
@@ -212,7 +255,7 @@
   {
     "sid": "ConnectorAssumeCustomerRoles",
     "scope": "boundary",
-    "comment": "Ceiling for connectors that sign in by assuming a role in the customer's own account (Amazon SageMaker's IAM-role mode). It allows sts:AssumeRole only with a Pavo-issued external ID: the prefix pavo-, because the exact value is derived per tenant after the instance exists and cannot be named here. This is a ceiling, not a grant: the workload role's policy in terraform-omnistrate-aws/main.tf names the exact role ARNs from the cell parameter /pavo/cells/<cluster>/connector_assumable_role_arns (set through pavo-bootstrap-aws's connector_assumable_role_arns) and grants nothing while that is unset. The customer's role trust policy must also name the workload role and the exact external ID. Unconditional like the MicroVM ceilings above, so every account bootstrapped from this version carries it.",
+    "comment": "Ceiling for connectors that sign in by assuming a role in the customer's own account (Amazon SageMaker's IAM-role mode). It allows sts:AssumeRole only with a Pavo-issued external ID: the prefix pavo-, because the exact value is derived per tenant after the instance exists and cannot be named here. This is a ceiling, not a grant: the workload role's policy in terraform-omnistrate-aws/main.tf names the exact role ARNs from the cell parameter /pavo/cells/<cluster>/connector_assumable_role_arns (set through pavo-bootstrap-aws's connector_assumable_role_arns) and grants nothing while that is unset. The customer's role trust policy must also name the workload role and the exact external ID. Unlike the MicroVM ceilings above it has no posture filter, so every account bootstrapped from this version carries it.",
     "effect": "Allow",
     "actions": ["sts:AssumeRole"],
     "resources": ["arn:aws:iam::*:role/*"],
@@ -227,21 +270,13 @@
     "scope": "runner",
     "effect": "Allow",
     "actions": [
-      "iam:DeleteRole",
       "iam:GetRole",
       "iam:ListRoles",
-      "iam:PassRole",
-      "iam:PutRolePolicy",
-      "iam:DeleteRolePolicy",
       "iam:GetRolePolicy",
-      "iam:AttachRolePolicy",
-      "iam:DetachRolePolicy",
       "iam:ListAttachedRolePolicies",
       "iam:ListRolePolicies",
       "iam:ListInstanceProfilesForRole",
-      "iam:ListRoleTags",
-      "iam:TagRole",
-      "iam:UntagRole"
+      "iam:ListRoleTags"
     ],
     "resources": [
       "arn:aws:iam::*:role/pavo-*",
@@ -249,10 +284,21 @@
     ]
   },
   {
-    "sid": "IAMUpdateAssumeRoleOnInstanceRoles",
+    "sid": "IAMWriteInstanceRoles",
     "scope": "runner",
+    "comment": "Writes only on roles stage 2 created: it tags every role managed_by=pavo + instance=<id> in CreateRole (provider default_tags), so a customer role that happens to be named pavo-* (README example pavo-sagemaker-read) stays out of reach. TagRole is conditioned too, so the runner cannot tag a foreign role into scope.",
     "effect": "Allow",
-    "actions": ["iam:UpdateAssumeRolePolicy"],
+    "actions": [
+      "iam:DeleteRole",
+      "iam:PassRole",
+      "iam:PutRolePolicy",
+      "iam:DeleteRolePolicy",
+      "iam:AttachRolePolicy",
+      "iam:DetachRolePolicy",
+      "iam:TagRole",
+      "iam:UntagRole",
+      "iam:UpdateAssumeRolePolicy"
+    ],
     "resources": [
       "arn:aws:iam::*:role/pavo-*",
       "arn:aws:iam::*:role/keda-*"
@@ -263,6 +309,31 @@
       },
       "StringLike": {
         "aws:ResourceTag/instance": "instance-*"
+      }
+    }
+  },
+  {
+    "sid": "IAMTagInstanceRolesAtCreate",
+    "scope": "runner",
+    "comment": "CreateRole with tags also authorises iam:TagRole, and IAM evaluates it before the role exists, so aws:ResourceTag is absent and IAMWriteInstanceRoles cannot match. Allow TagRole on the REQUEST tags instead, and only while the role carries neither ownership tag (Null on both aws:ResourceTag keys): that is the create path and an existing role nobody has tagged. A role tagged by another owner is out of reach here; a role stage 2 already owns is covered by IAMWriteInstanceRoles. Residual: an existing pavo-*/keda-* role with neither tag can be claimed. No aws:TagKeys list: it did not fit under the 10240-char runner-policy cap together with the Null conditions.",
+    "effect": "Allow",
+    "actions": [
+      "iam:TagRole"
+    ],
+    "resources": [
+      "arn:aws:iam::*:role/pavo-*",
+      "arn:aws:iam::*:role/keda-*"
+    ],
+    "conditions": {
+      "StringEquals": {
+        "aws:RequestTag/managed_by": "pavo"
+      },
+      "StringLike": {
+        "aws:RequestTag/instance": "instance-*"
+      },
+      "Null": {
+        "aws:ResourceTag/managed_by": "true",
+        "aws:ResourceTag/instance": "true"
       }
     }
   },
@@ -372,6 +443,8 @@
   },
   {
     "sid": "SecretsManagerScopedRead",
+    "scope": "boundary",
+    "comment": "Ceiling for the per-instance ESO roles, which are identity-scoped to their own rds! secret. The runner never reads secret values (Terraform takes the ARN from DescribeDBInstances), so it is kept out of the runner policy.",
     "effect": "Allow",
     "actions": [
       "secretsmanager:GetSecretValue",

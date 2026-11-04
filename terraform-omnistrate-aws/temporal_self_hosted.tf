@@ -2,11 +2,11 @@
 # Self-hosted Temporal — per-instance (in-VPC workflow orchestration)
 # =============================================================================
 # Materializes ONLY when temporal_mode = "self_hosted". Default temporal_mode =
-# "cloud" (Temporal Cloud gdv7k) is completely unchanged — every resource here
+# "cloud" (Temporal Cloud) is completely unchanged — every resource here
 # is count/for_each-gated, so this file is purely additive and touches nothing
 # on the existing cloud path.
 #
-# Layout (LLD: Self-hosting Temporal, vchandela):
+# Layout:
 #   1. Dedicated RDS PG16 (db.t4g.medium, Multi-AZ, gp3, customer CMK, 7d PITR)
 #      with `temporal` + `temporal_visibility` DBs — SQL visibility, no ES.
 #   2. ESO secrets: RDS master creds sync + generated passwords for the two DB
@@ -29,20 +29,18 @@
 #      the ONLY exposed port is an nginx sidecar enforcing basic auth on `/`
 #      AND the same-origin `/codec` proxy (browser-originated decode calls).
 #      Ingress rides pavo-nginx like Kibana/Zitadel, so exposure (and the
-#      issuer: public ACME vs private CA) follows the cell's network_posture.
+#      issuer: public ACME vs self-signed) follows the cell's network_posture.
 #
-# Images are ghcr.io/pavoai/mirror/* digest pins (Docker Hub anonymous pulls
-# share the cell NAT and rate-limit; precedent: postgres via public.ecr.aws,
-# zitadel via ghcr). Copy with scripts/mirror-temporal-images.sh — digests are
-# preserved by the copy, so the pins below equal the upstream Docker Hub
-# digests.
+# Images are the artifact-plane ECR copies (mirrored_images.tf, local.image.*)
+# of Pavo's GHCR mirror of the temporalio images; copied by digest, so the
+# @sha256 pins below equal the upstream Docker Hub digests.
 
 locals {
   temporal_self_hosted = local.effective_temporal_mode == "self_hosted"
   temporal_count       = local.temporal_self_hosted ? 1 : 0
 
   temporal_namespace_k8s = var.instance_id
-  # Temporal (logical) namespace — matches the Cloud naming minus the .gdv7k
+  # Temporal (logical) namespace — matches the Cloud naming minus the account
   # suffix so dashboards/runbooks stay recognizable.
   temporal_namespace = "pavo-${var.customer_name}-intern"
   # 30d retention — Cloud parity.
@@ -69,7 +67,7 @@ locals {
     trimspace(var.temporal_codec_image) != ""
   )
 
-  # --- images (digest pins == upstream Docker Hub digests, copy-preserved) ---
+  # --- images (artifact-plane ECR copies; digests == upstream Docker Hub) ---
   # temporalio/server 1.31.2 (chart 1.6.0 appVersion)
   temporal_server_image_repo = local.image.temporal_server
   temporal_server_image_tag  = "1.31.2@sha256:b5ecdb8282bededae2a10c36e8d862e27d0bc2d247fc73c5416025997ab4a1da"
@@ -81,12 +79,8 @@ locals {
   temporal_ui_image    = local.image.temporal_ui
   temporal_nginx_image = local.image.nginx
 
-  # Same amd64 workload-nodegroup pin as the zitadel stack: keeps Temporal off
-  # the small arm64 system nodes, and the (amd64-only) intern codec image needs
-  # it anyway.
-  temporal_node_selector = {
-    "node.kubernetes.io/instance-type" = "t3.2xlarge"
-  }
+  # Same amd64 workload pool as the zitadel stack (see workload_node_selector).
+  temporal_node_selector = local.workload_node_selector
 
   # --- canonical in-cluster object names (single source of truth) -------------
   temporal_rds_master_secret    = "temporal-rds-master-credentials"
@@ -890,9 +884,6 @@ resource "kubernetes_job_v1" "temporal_schema_setup" {
       spec {
         restart_policy = "Never"
         node_selector  = local.temporal_node_selector
-        image_pull_secrets {
-          name = "pavo-ghcr-signature-pull"
-        }
 
         container {
           name    = "schema"
@@ -994,7 +985,6 @@ resource "helm_release" "temporal" {
 
   values = [yamlencode({
     fullnameOverride = "temporal"
-    imagePullSecrets = [{ name = "pavo-ghcr-signature-pull" }]
 
     server = {
       enabled = true
@@ -1228,9 +1218,6 @@ resource "kubernetes_job_v1" "temporal_namespace_register" {
       spec {
         restart_policy = "Never"
         node_selector  = local.temporal_node_selector
-        image_pull_secrets {
-          name = "pavo-ghcr-signature-pull"
-        }
 
         container {
           name    = "register"
@@ -1436,10 +1423,6 @@ resource "kubernetes_deployment_v1" "temporal_web" {
       }
       spec {
         node_selector = local.temporal_node_selector
-        image_pull_secrets {
-          name = "pavo-ghcr-signature-pull"
-        }
-
         # --- nginx auth sidecar: the single exposed port -------------------
         container {
           name  = "nginx"

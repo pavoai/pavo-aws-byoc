@@ -130,7 +130,7 @@ resource "terraform_data" "microvm_mode" {
 resource "aws_s3_bucket" "microvm_image" {
   count         = local.microvm_count
   bucket_prefix = "pavo-microvm-${substr(var.instance_id, 0, 24)}-"
-  force_destroy = false
+  force_destroy = var.force_destroy_buckets
 
   lifecycle { prevent_destroy = true }
   depends_on = [kubernetes_config_map_v1.microvm_config]
@@ -193,6 +193,11 @@ data "aws_iam_policy_document" "microvm_build_assume" {
     principals {
       type        = "Service"
       identifiers = ["lambda.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
     }
   }
 }
@@ -350,9 +355,9 @@ data "aws_iam_policy_document" "microvm_build" {
     sid     = "WriteBuildLogStream"
     effect  = "Allow"
     actions = ["logs:CreateLogStream", "logs:PutLogEvents"]
-    # IAM simulation currently returns implicitDeny for this documented ARN
-    # form. Do not broaden the build role to all log groups; an actual Dev image
-    # build is the rollout gate for resolving the simulator discrepancy.
+    # The IAM policy simulator reports implicitDeny for this ARN because the
+    # log-group name contains '/', a simulator artifact (same as the microvm/<id>
+    # quirk). Real builds write these streams; do not broaden to all log groups.
     resources = ["arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda-microvms/${local.microvm_image_name}:log-stream:*"]
   }
 }
@@ -413,7 +418,6 @@ resource "kubernetes_job_v1" "microvm_publisher" {
         restart_policy       = "Never"
         service_account_name = kubernetes_service_account_v1.microvm_publisher[0].metadata[0].name
         enable_service_links = false
-        image_pull_secrets { name = "pavo-ghcr-signature-pull" }
         toleration {
           key      = "CriticalAddonsOnly"
           operator = "Exists"

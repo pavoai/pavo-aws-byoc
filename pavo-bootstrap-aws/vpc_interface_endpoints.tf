@@ -13,6 +13,8 @@
 #   sns / sqs            — existing topics and DLQs
 #   elasticfilesystem    — existing EFS file system
 #   email                — SES v2 GetEmailIdentity
+#   acm                  — strict edge certificate: pavoCert RequestCertificate,
+#                          pavoInfra DescribeCertificate (validation wait)
 #
 # Instance tofu (terraform-omnistrate-aws/vpc_endpoints.tf) still lists them
 # and will skip when a foreign private-DNS endpoint already exists. Name these
@@ -41,6 +43,7 @@ locals {
       "sqs",
       "elasticfilesystem",
       "email",
+      "acm",
     ],
     # Opt-in connector endpoint (enable_sagemaker_api_endpoint): the Amazon
     # SageMaker API for the SageMaker connector on a strict cell. Workload-only,

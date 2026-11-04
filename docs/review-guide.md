@@ -7,21 +7,21 @@
    image admission.
 3. [network-and-egress.md](network-and-egress.md): what your VPC talks to.
 4. [data-handled.md](data-handled.md): encryption and secrets.
-5. [security-review-response.md](security-review-response.md): the review
-   reply mapped to this snapshot.
-6. [inputs-contract.md](inputs-contract.md): every input and its source.
-7. The code, starting from each module's `main.tf`, `variables.tf` and
-   `README.md`.
+5. [inputs-contract.md](inputs-contract.md): every input and its source.
+6. The code, starting from each module's `main.tf` and `variables.tf`, and
+   the two stage modules' `README.md`.
 
 ## Checklist
 
-- [ ] Every IAM role stage 2 creates carries the stage 1 permission boundary.
+- [ ] Every IAM role stage 2 creates carries a stage 1 permission boundary.
 - [ ] No policy grants access to resources outside the instance, except where
       the reason is documented.
 - [ ] Data stores holding customer data are encrypted at rest, and you accept
       the key choice for each ([data-handled.md](data-handled.md)).
 - [ ] The egress for your chosen modes matches your policy.
-- [ ] Images are admission-controlled in `enforce` mode.
+- [ ] Pavo images are pulled by their ECR-mirror name, which admission does
+      not signature-check today; the control is the digest pin
+      ([permissions.md](permissions.md#image-admission)).
 - [ ] You accept the state locations and what they contain.
 - [ ] You accept the teardown behaviour (`terraform-omnistrate-aws/README.md`,
       "Teardown contract").

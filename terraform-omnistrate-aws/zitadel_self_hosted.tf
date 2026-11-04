@@ -7,24 +7,15 @@
 # local.zitadel_count, so this file is purely additive and touches nothing on
 # the existing cloud path.
 #
-# Steps implemented here (all live-validated on a test cell via throwaway spikes):
-#   Step 1 — flag gate + resolved auth host + in-cluster secrets (masterkey +
-#            zitadel DB password, ESO generate-once, never in TF state).
-#   Step 2 — `zitadel-db-credentials` (DB + least-priv role created by
-#            `zitadel init` in the Setup Job; rides the customer CMK, no new KMS).
-#   Step 3 — Setup Job: `zitadel init` → `setup` (FirstInstance → customer org +
-#            provisioner machine KEY) → persist the key to a scoped Secret.
-#   Step 4 — Zitadel Deployment (2 replicas, serves internal HTTPS so callers
-#            never spoof X-Forwarded-Proto) + PDB + Service + Ingress + the
-#            cert-manager self-signed cert it serves.
+# Contents: flag gate + resolved auth host; masterkey and zitadel DB password as
+# ESO generate-once in-cluster Secrets (never in TF state); `zitadel-db-credentials`
+# (DB + least-priv role created by `zitadel init`, on the customer CMK); Setup Job
+# (`zitadel init` → `setup`: FirstInstance → customer org + provisioner machine key,
+# persisted to a scoped Secret); Zitadel Deployment (2 replicas, internal HTTPS so
+# callers can't spoof X-Forwarded-Proto) + PDB + Service + Ingress + cert-manager
+# self-signed cert.
 #
-# The Provision Job (Step 5), Readiness (Step 7), and the api-gateway / frontend
-# / spec-byoc runtime rewire (Step 6) land separately.
-#
-# KISS/DEV note: masterkey custody here is the throwaway ESO generate-once
-# pattern (INV-2 — losing the Secret loses the DEV identity, accepted). The
-# durable Secrets-Manager custody + the DB-state-aware regeneration guard are
-# part of the prod/strict follow-up, not this DEV foundation.
+# Masterkey custody is the in-cluster Secret only: losing it loses the identity.
 
 locals {
   zitadel_self_hosted = local.effective_zitadel_mode == "self_hosted"
@@ -37,6 +28,7 @@ locals {
   # customer_name is unique/stable (never reused) and matches the app host
   # convention `<customer_name>.<base_domain>`. Consumed by the Deployment /
   # Ingress / issuer wiring in Steps 4-6.
+  # Mirrored in pavo-cert-aws/main.tf (certificate SAN); change both.
   zitadel_auth_host = var.auth_hostname != "" ? var.auth_hostname : "auth.${var.customer_name}.${var.base_domain}"
 
   # Canonical in-cluster object names (single source of truth — reused verbatim
@@ -172,8 +164,8 @@ resource "kubectl_manifest" "zitadel_masterkey_external_secret" {
 # The generated DB password + the Terraform-known RDS coordinates are combined
 # into `zitadel-db-credentials` with discrete ZITADEL_DATABASE_POSTGRES_* keys.
 # The dedicated `zitadel` DB + least-priv role are created by `zitadel init`
-# (Setup Job, Step 3) using these USER creds + the RDS master as ADMIN — spike-
-# validated, so no custom psql job (KISS). INV-5 holds: master creds appear only
+# (Setup Job, Step 3) using these USER creds + the RDS master as ADMIN, so no
+# custom psql job. Master creds appear only
 # in the Setup Job's init container; runtime uses this least-priv `zitadel` user;
 # dedicated DB. Encryption is FREE: the `zitadel` DB lives on the existing
 # per-instance RDS, already storage_encrypted under the customer CMK
@@ -237,7 +229,7 @@ resource "kubectl_manifest" "zitadel_db_credentials_external_secret" {
 }
 
 # -----------------------------------------------------------------------------
-# Steps 3-4 locals (images spike-pinned by digest; stock images are admitted by
+# Steps 3-4 locals (images pinned by digest; stock images are admitted by
 # the cell Sigstore policy — no-match=allow, only ghcr.io/pavoai/** is enforced)
 # -----------------------------------------------------------------------------
 locals {
@@ -253,22 +245,15 @@ locals {
     "app.kubernetes.io/instance" = var.instance_id
   }
 
-  # Pin the whole zitadel stack to the amd64 workload nodegroup (t3.2xlarge),
-  # matching the app services' nodeSelector in spec-byoc.yaml. Required because
-  # the zitadel-provisioner image is amd64-only: without this, pods fall to the
-  # Omnistrate DEFAULT nodegroup — which is arm64 (t4g) — and the provisioner
-  # image fails (exec-format). Also keeps the Zitadel Deployment off the small
-  # arm64 system nodes. TEMPORARY: drop once the images go multi-arch (tracked).
-  zitadel_node_selector = {
-    "node.kubernetes.io/instance-type" = "t3.2xlarge"
-  }
+  # Whole zitadel stack on the amd64 workload pool (see workload_node_selector).
+  zitadel_node_selector = local.workload_node_selector
 }
 
 # =============================================================================
 # Step 3 — Setup Job: init → setup → persist provisioner machine key
 # =============================================================================
 # Runs ONCE before the Deployment (Step 4), so multi-replica `zitadel start` is
-# safe. Sequence (spike-validated, F7/F8):
+# safe. Sequence:
 #   initContainer `zitadel-init`  (ADMIN=RDS master) creates the zitadel DB+role
 #   initContainer `zitadel-setup` (FirstInstance)    creates instance + customer
 #                                                     org + provisioner machine
@@ -276,7 +261,7 @@ locals {
 #   container     `persist-key`   copies the KEY JSON into a scoped K8s Secret
 #                                 (idempotent; retries the write in-process so a
 #                                  transient API error can't forfeit the one-shot
-#                                  key — fail-hard only if truly gone — F8).
+#                                  key — fail-hard only if truly gone).
 
 resource "kubernetes_service_account_v1" "zitadel_setup" {
   count = local.zitadel_count
@@ -292,11 +277,17 @@ resource "kubernetes_role_v1" "zitadel_setup" {
     name      = "zitadel-setup"
     namespace = local.zitadel_namespace
   }
-  # Least-priv: only the provisioner-credential secret, only create/get/patch.
+  # create can't be name-scoped (no name in the request); get is.
   rule {
     api_groups = [""]
     resources  = ["secrets"]
-    verbs      = ["get", "create", "patch"]
+    verbs      = ["create"]
+  }
+  rule {
+    api_groups     = [""]
+    resources      = ["secrets"]
+    resource_names = [local.zitadel_provisioner_secret]
+    verbs          = ["get"]
   }
 }
 
@@ -341,7 +332,7 @@ resource "kubernetes_job_v1" "zitadel_setup" {
     template {
       metadata {}
       spec {
-        enable_service_links = false # F1: avoid ZITADEL_PORT Service-link collision
+        enable_service_links = false # avoid ZITADEL_PORT Service-link collision
         node_selector        = local.zitadel_node_selector
         service_account_name = kubernetes_service_account_v1.zitadel_setup[0].metadata[0].name
         restart_policy       = "Never"
@@ -403,7 +394,7 @@ resource "kubernetes_job_v1" "zitadel_setup" {
             name  = "ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE"
             value = "require"
           }
-          # Public-issuer identity (F9: issuer scheme comes from these + XFP).
+          # Public-issuer identity (issuer scheme comes from these + XFP).
           env {
             name  = "ZITADEL_EXTERNALDOMAIN"
             value = local.zitadel_auth_host
@@ -520,11 +511,11 @@ resource "kubernetes_job_v1" "zitadel_setup" {
 # Step 4 — Zitadel Deployment (HA) + Service + Ingress
 # =============================================================================
 
-# Internal TLS (F10): a cert-manager self-signed Issuer mints the cert Zitadel
+# Internal TLS: a cert-manager self-signed Issuer mints the cert Zitadel
 # serves on :8080, so every in-cluster caller connects over real HTTPS (no XFP
 # spoofing, no proxy sidecar). The provisioner Job verifies it against this
 # Secret's ca.crt; other in-cluster callers skip-verify. The public browser path
-# is fronted by the LE cert on the Ingress. Key never enters
+# is fronted by the ingress cert (local.ingress_cluster_issuer). Key never enters
 # TF state; auto-renewed by cert-manager.
 resource "kubectl_manifest" "zitadel_selfsigned_issuer" {
   count = local.zitadel_count
@@ -616,11 +607,11 @@ resource "kubernetes_deployment_v1" "zitadel" {
         labels = local.zitadel_labels
       }
       spec {
-        enable_service_links = false # F1 (critical): ZITADEL_PORT Service-link collision
+        enable_service_links = false # critical: ZITADEL_PORT Service-link collision
         node_selector        = local.zitadel_node_selector
 
-        # Soft anti-affinity in DEV — required would risk an unschedulable 2nd
-        # replica on a small node pool (prod flips this to required).
+        # Soft anti-affinity — required would risk an unschedulable 2nd
+        # replica on a small node pool.
         affinity {
           pod_anti_affinity {
             preferred_during_scheduling_ignored_during_execution {
@@ -668,7 +659,7 @@ resource "kubernetes_deployment_v1" "zitadel" {
             name  = "ZITADEL_EXTERNALSECURE"
             value = "true"
           }
-          # Serve REAL HTTPS internally (F10): callers connect over TLS with just
+          # Serve REAL HTTPS internally: callers connect over TLS with just
           # the Host header → https issuer, no X-Forwarded-Proto spoofing and no
           # proxy sidecar anywhere. Cert from the cert-manager self-signed Issuer.
           env {
@@ -784,7 +775,7 @@ resource "kubernetes_ingress_v1" "zitadel" {
     namespace = local.zitadel_namespace
     annotations = {
       "cert-manager.io/cluster-issuer" = local.ingress_cluster_issuer
-      # Zitadel serves HTTPS internally (F10) — nginx must re-encrypt to the
+      # Zitadel serves HTTPS internally — nginx must re-encrypt to the
       # backend. proxy_ssl_verify is off by default, so the self-signed backend
       # cert is accepted.
       "nginx.ingress.kubernetes.io/backend-protocol" = "HTTPS"

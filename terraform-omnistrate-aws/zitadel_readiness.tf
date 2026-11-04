@@ -1,5 +1,5 @@
 # =============================================================================
-# Step 7 — Readiness gate (INV-10)
+# Step 7 — Readiness gate
 # =============================================================================
 # The instance is not "ready" until: the identity config is applied (Provision
 # Job succeeded — a depends_on), Zitadel serves the correct issuer over internal
@@ -89,7 +89,7 @@ resource "kubernetes_job_v1" "zitadel_readiness" {
           args = [<<-EOT
             set -euo pipefail
 
-            # 1. Zitadel serves the correct issuer over internal TLS (INV-4).
+            # 1. Zitadel serves the correct issuer over internal TLS.
             #    -k: internal self-signed cert, skip-verify in-cluster.
             echo "asserting internal issuer ..."
             for i in $(seq 1 48); do
@@ -100,12 +100,12 @@ resource "kubernetes_job_v1" "zitadel_readiness" {
             done
             echo "issuer OK: https://$AUTH_HOST"
 
-            # 2. Let's Encrypt cert for the public host — best-effort, NON-blocking.
+            # 2. Ingress cert for the public host — best-effort, NON-blocking.
             #    This cert fronts ONLY the public browser path. The api-gateway <->
             #    Zitadel OIDC path uses the internal svc (asserted in step 1) with
             #    the internal self-signed cert, so app correctness does not depend
-            #    on it. LE issuance hinges on external ACME + public DNS + LE rate
-            #    limits, so we must NOT couple the apply to it — we wait briefly,
+            #    on it. On standard, LE issuance hinges on external ACME + public DNS
+            #    + LE rate limits, so we must NOT couple the apply to it — we wait briefly,
             #    log the status, and continue; cert-manager keeps retrying issuance
             #    in the background until the browser path goes green.
             echo "checking Certificate zitadel-tls (best-effort) ..."
@@ -118,7 +118,7 @@ resource "kubernetes_job_v1" "zitadel_readiness" {
             if [ "$ready" = "True" ]; then
               echo "public cert Ready"
             else
-              echo "WARNING: public LE cert not Ready yet (status='$ready') — continuing; cert-manager will keep retrying. The internal OIDC path is unaffected." >&2
+              echo "WARNING: public ingress cert not Ready yet (status='$ready') — continuing; cert-manager will keep retrying. The internal OIDC path is unaffected." >&2
             fi
 
             # 3. Handoff objects exist (api-gateway + frontend can wire up).

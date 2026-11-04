@@ -26,7 +26,7 @@
 #     do not terraform import (Omnistrate tofu cannot import easily).
 #   - Cell bootstrap (pavo-bootstrap-aws) owns the plan-refresh APIs
 #     (kms, secretsmanager, iam, rds, elasticache, sns, sqs,
-#     elasticfilesystem, email) as pavo-vpce-<svc>-<eks_cluster_name>.
+#     elasticfilesystem, email, acm) as pavo-vpce-<svc>-<eks_cluster_name>.
 #     Those are foreign here and must exist *before* the first instance
 #     plan on a no-NAT cell.
 # =============================================================================
@@ -35,7 +35,7 @@ variable "enable_vpc_endpoints" {
   description = <<-EOT
     Provision VPC interface endpoints (AWS PrivateLink) for Bedrock (control
     plane + runtime), KMS, Secrets Manager, ECR, SQS, SNS, STS, RDS,
-    ElastiCache, EFS, IAM, and SES (when email is enabled) so those AWS API
+    ElastiCache, EFS, IAM, ACM (strict only), and SES (when email is enabled) so those AWS API
     calls never traverse the public internet. Default true — small hourly
     cost per endpoint, and required for the zero-egress posture on strict
     BYOC (e.g. healthcare) and for instance tofu on a private cell (no NAT).
@@ -65,6 +65,9 @@ locals {
       "elasticache",       # Redis replication groups
       "iam",               # CreateRole / IRSA policies — global, not regional
     ],
+    # Strict edge certificate (edge_certificate.tf DescribeCertificate); nothing
+    # on a standard instance calls ACM.
+    var.network_posture == "strict" ? ["acm"] : [],
     # SES v2 API endpoint — transactional email SendEmail stays on the AWS
     # backbone (no VPC internet egress) when email is enabled.
     local.email_enabled ? ["email"] : [],
@@ -152,12 +155,15 @@ resource "aws_security_group" "vpc_endpoints" {
   description = "HTTPS from within the VPC to PrivateLink interface endpoints"
   vpc_id      = var.vpc_id
 
+  # Every VPC CIDR block, primary and secondary: under the VPC CNI a pod's IP can
+  # come from a secondary block (same list as pavo-bootstrap-aws and the strict
+  # egress NetworkPolicy). Identical to the primary block on a single-CIDR VPC.
   ingress {
     description = "HTTPS from within the VPC"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
-    cidr_blocks = [data.aws_vpc.eks.cidr_block]
+    cidr_blocks = data.aws_vpc.eks.cidr_block_associations[*].cidr_block
   }
 
   egress {
@@ -165,7 +171,7 @@ resource "aws_security_group" "vpc_endpoints" {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = [data.aws_vpc.eks.cidr_block]
+    cidr_blocks = data.aws_vpc.eks.cidr_block_associations[*].cidr_block
   }
 
   tags = {

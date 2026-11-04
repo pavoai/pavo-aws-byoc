@@ -1,0 +1,64 @@
+applications:
+  github:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  dbt:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  databricks:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  eppo:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  statsig:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  shopify:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  intelligems:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  clickhouse:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  superset:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  snowflake:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  bigquery:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  redash:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  bitbucket:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  metabase:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  quicksight:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  powerbi:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  orchestrator-api:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  orchestrator-v2:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  nugget-worker:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  rag-worker:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"
+  rag-service:
+    image:
+      tag: "b0e1435191653f756fdc04165a83977a8a107e9f"

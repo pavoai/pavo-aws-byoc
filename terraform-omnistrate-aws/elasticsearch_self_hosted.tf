@@ -1,24 +1,23 @@
 # =============================================================================
-# Self-hosted Elasticsearch (ECK) — per-instance (C2)
+# Self-hosted Elasticsearch (ECK) — per-instance
 # =============================================================================
 # Materializes ONLY when es_mode = "self_hosted". Default es_mode = "cloud"
 # (Elastic Cloud via ec_deployment) is completely unchanged — every resource
 # here is count-gated, so this file is purely additive and touches nothing on
-# the existing cloud path. Validated end-to-end on a live cell in the
-# Phase 0 spike.
+# the existing cloud path. Validated end-to-end on a live cell.
 #
-# C2 (this file) — the cluster + its identity:
+# This file — the cluster + its identity:
 #   - CMK gp3 StorageClass (EBS at rest under the customer CMK)
 #   - ESO Password generators + ExternalSecrets for 3 least-priv fileRealm users
 #   - roles.yml secret (native ES role definitions)
 #   - Elasticsearch CR (1 node, 0 replicas, ClusterIP, IRSA pod template)
 #   - snapshot IRSA role + pavo-es ServiceAccount (pod identity; S3/KMS policy +
-#     bucket + bootstrap Job come in C3)
+#     bucket + bootstrap Job are in elasticsearch_snapshots.tf)
 #   - ES-scoped NetworkPolicy
 #   - elasticsearch_exporter (monitor-only)
 #
 # NOTE: needs the cell to have ECK installed (pavo-bootstrap-aws var.enable_eck),
-# and the EBS CSI role to hold the customer-CMK KMS grant (separate PR) for the
+# and the EBS CSI role to hold the customer-CMK KMS grant for the
 # data volume to actually provision. Both are deploy-time deps, not code deps.
 
 locals {
@@ -56,7 +55,7 @@ locals {
 # kubectl_manifest.elasticsearch below turns it into an actionable message.
 
 # -----------------------------------------------------------------------------
-# CMK gp3 StorageClass — EBS at rest under the customer CMK (INV-2)
+# CMK gp3 StorageClass — EBS at rest under the customer CMK
 # -----------------------------------------------------------------------------
 resource "kubernetes_storage_class_v1" "es_cmk" {
   count = local.es_count
@@ -76,11 +75,11 @@ resource "kubernetes_storage_class_v1" "es_cmk" {
 }
 
 # -----------------------------------------------------------------------------
-# fileRealm credentials — ESO Password generators + ExternalSecrets (INV-4/5)
+# fileRealm credentials — ESO Password generators + ExternalSecrets
 # -----------------------------------------------------------------------------
 # Passwords are generated in-cluster by ESO and never enter Terraform state.
 # refreshInterval: "0" = generate-once (proven stable across operator restart /
-# TF re-apply / metadata update in the spike; only force-sync regenerates — so
+# TF re-apply / metadata update; only force-sync regenerates — so
 # never force-sync these, and ignore_changes guards against drift-rotation).
 resource "kubectl_manifest" "es_password_generator" {
   for_each = local.es_users
@@ -189,7 +188,7 @@ resource "kubernetes_secret_v1" "es_roles" {
           privileges = ["read", "write", "create_index", "view_index_metadata"]
         }]
       }
-      # One-shot bootstrap Job (C3): snapshot repo + SLM. Granular, no broad manage.
+      # One-shot bootstrap Job (elasticsearch_snapshots.tf): snapshot repo + SLM. Granular, no broad manage.
       pavo_es_bootstrap = {
         cluster = ["monitor", "manage_slm", "cluster:admin/repository/*", "cluster:admin/snapshot/*"]
       }
@@ -209,11 +208,11 @@ resource "kubernetes_secret_v1" "es_roles" {
 }
 
 # -----------------------------------------------------------------------------
-# Snapshot pod identity — IRSA role + ServiceAccount (INV-1/4)
+# Snapshot pod identity — IRSA role + ServiceAccount
 # -----------------------------------------------------------------------------
 # Trust is pinned to the single ES ServiceAccount (NOT the namespace-wide app
 # role), so only the ES pod — not every app pod — can assume it. The S3 + KMS
-# permissions and the snapshot bucket/Job are added in C3.
+# permissions and the snapshot bucket/Job are added in elasticsearch_snapshots.tf.
 data "aws_iam_policy_document" "es_snapshots_assume" {
   count = local.es_count
 
@@ -263,7 +262,7 @@ resource "kubernetes_service_account_v1" "pavo_es" {
 }
 
 # -----------------------------------------------------------------------------
-# Elasticsearch CR — single node, 0 replicas, ClusterIP-only (INV-1/3/6/9)
+# Elasticsearch CR — single node, 0 replicas, ClusterIP-only
 # -----------------------------------------------------------------------------
 resource "kubectl_manifest" "elasticsearch" {
   count = local.es_count
@@ -283,7 +282,7 @@ resource "kubectl_manifest" "elasticsearch" {
         roles     = [{ secretName = "es-app-roles" }]
       }
       http = {
-        # ClusterIP only — never a public LB/Ingress (INV-1 residency).
+        # ClusterIP only — never a public LB/Ingress (data residency).
         service = { spec = { type = "ClusterIP" } }
       }
       nodeSets = [{
@@ -371,10 +370,10 @@ resource "kubectl_manifest" "elasticsearch" {
 }
 
 # -----------------------------------------------------------------------------
-# NetworkPolicy — ES-scoped INGRESS only, no namespace-wide default-deny (INV-1b)
+# NetworkPolicy — ES-scoped INGRESS only, no namespace-wide default-deny
 # -----------------------------------------------------------------------------
 # podSelector-scoped so it isolates ES without touching the ~18-pod app stack.
-# INV-1b still holds for the default (standard) posture. network_posture=strict
+# That holds for the default (standard) posture. network_posture=strict
 # adds a namespace-wide EGRESS policy in network_policies.tf; the two do not
 # interact, because NetworkPolicies of different policyTypes are evaluated
 # independently and same-type rules union rather than intersect.
@@ -444,8 +443,8 @@ resource "kubectl_manifest" "kibana" {
       count            = 1
       elasticsearchRef = { name = local.es_name }
       http = {
-        # Serve plain HTTP in-cluster; nginx terminates the public Let's Encrypt
-        # cert at the edge (same pattern as Zitadel/Grafana). ClusterIP only.
+        # Serve plain HTTP in-cluster; nginx terminates the ingress cert at the
+        # edge (same pattern as Zitadel/Grafana). ClusterIP only.
         tls     = { selfSignedCertificate = { disabled = true } }
         service = { spec = { type = "ClusterIP" } }
       }
@@ -476,8 +475,8 @@ resource "kubectl_manifest" "kibana" {
   depends_on = [kubectl_manifest.elasticsearch]
 }
 
-# Public browser path for Kibana — pavo-nginx + Let's Encrypt (both cell-scoped,
-# from pavo-bootstrap-aws), at kibana.<customer_name>.<base_domain>. Kibana
+# Public browser path for Kibana — pavo-nginx + local.ingress_cluster_issuer (both
+# cell-scoped, from pavo-bootstrap-aws), at kibana.<customer_name>.<base_domain>. Kibana
 # serves HTTP (TLS disabled above), so the backend is plain HTTP (no re-encrypt).
 # Applied via kubectl_manifest (server-side apply) like every other resource in
 # this file, so it ADOPTS a pre-existing "kibana" Ingress (e.g. one applied by

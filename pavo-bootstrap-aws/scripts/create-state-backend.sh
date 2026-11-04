@@ -7,9 +7,11 @@
 # that account share it, keyed per cell (see below). Run this ONCE per AWS
 # account, before the first `terraform init` for any cell in it.
 #
-# Naming convention (derived from the caller's account ID — do not hand-name):
+# Naming convention (derived from the caller's account ID):
 #   S3 bucket   = pavo-tf-state-<account-id>   (versioned, SSE-KMS under the cell CMK
 #                 when one is passed, else AES256; public-blocked)
+#                 Override with TF_STATE_BUCKET to keep state outside pavo-* (the
+#                 runner's s3:* grant covers pavo-*). Never rename an existing cell's.
 #   Lock table  = pavo-tf-state-locks          (DynamoDB, LockID hash key)
 #   State key   = pavo-bootstrap-aws/<cluster>/terraform.tfstate   (per cell)
 #
@@ -37,7 +39,7 @@ ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)" || {
   echo "[FAIL] could not resolve AWS account — check AWS_PROFILE / credentials" >&2
   exit 1
 }
-BUCKET="pavo-tf-state-${ACCOUNT_ID}"
+BUCKET="${TF_STATE_BUCKET:-pavo-tf-state-${ACCOUNT_ID}}"
 TABLE="pavo-tf-state-locks"
 
 echo "Account : ${ACCOUNT_ID}"
@@ -101,6 +103,10 @@ else
 fi
 
 # --- Emit the per-cell backend config -------------------------------------
+# kms_key_id is not optional with a CMK: terraform sends SSE-S3 without it and
+# the bucket default does not apply to that write.
+KMS_LINE=""
+[ -z "${KMS_KEY_ARN}" ] || KMS_LINE=$'\n'"  kms_key_id     = \"${KMS_KEY_ARN}\""
 cat <<EOF
 
 Done. Add a per-cell backend file (replace <cluster> with the EKS cluster name):
@@ -110,7 +116,7 @@ Done. Add a per-cell backend file (replace <cluster> with the EKS cluster name):
   key            = "pavo-bootstrap-aws/<cluster>/terraform.tfstate"
   region         = "${REGION}"
   dynamodb_table = "${TABLE}"
-  encrypt        = true
+  encrypt        = true${KMS_LINE}
 
 Then: terraform init -backend-config=cells/<cluster>/backend.s3.tfbackend
 EOF

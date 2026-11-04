@@ -311,7 +311,7 @@ output "zitadel_oidc_redirect_uri" {
 # -----------------------------------------------------------------------------
 # Self-hosted Temporal (temporal_mode=self_hosted): in-cluster endpoint + the
 # cert-manager client-cert secret intern mounts. Empty on cloud — the intern
-# chart prefers these when non-empty and otherwise keeps the gdv7k Temporal
+# chart prefers these when non-empty and otherwise keeps the Temporal
 # Cloud values from the spec (same guard pattern as elasticsearch_*).
 # -----------------------------------------------------------------------------
 
@@ -482,7 +482,7 @@ output "openai_api_key" {
 }
 
 output "anthropic_api_key" {
-  description = "Anthropic API key for tribal V8 book generation"
+  description = "Per-tenant Anthropic API key (unused: Claude runs keyless via Bedrock)"
   value       = trimspace(var.anthropic_api_key)
   sensitive   = true
 }
@@ -631,4 +631,9 @@ output "primary_external_identity_provider_saml_sp_entity_id" {
 output "primary_external_identity_provider_saml_acs_url" {
   description = "Zitadel SAML ACS URL (pass-through). Empty for non-SAML customers."
   value       = var.primary_external_identity_provider_saml_acs_url
+}
+
+output "edge_certificate_arn" {
+  description = "ACM certificate on the strict-cell NLB listener, ISSUED by the time this output exists. Empty on standard posture."
+  value       = local.edge_cert_count == 1 ? aws_acm_certificate_validation.edge[0].certificate_arn : ""
 }

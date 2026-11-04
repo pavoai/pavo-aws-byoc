@@ -10,15 +10,10 @@
 #
 # All cell-scoped resources (EKS access entry, ESO/Reloader Helm, EBS CSI,
 # cluster-scoped K8s objects) live in `pavo-bootstrap-aws/`. All identity
-# resources (Zitadel) live in `pavo-customer-bootstrap/`. See repo
-# README → "Module ownership" for the full split.
+# resources (Zitadel) live in `pavo-customer-bootstrap/`.
 #
 # Provider list reflects the post-rescope reality:
-#   - `helm` declared but no longer consumed by any active resource. The
-#     Sigstore Policy Controller release that briefly used it (PR #90) has
-#     moved to pavo-bootstrap-aws/. The declaration stays around the
-#     `removed { helm_release.policy_controller }` shim at the bottom of
-#     main.tf — drop the provider in a cleanup PR once that shim is gone.
+#   - `helm`: the self-hosted Temporal chart release (temporal_self_hosted.tf).
 #   - `zitadel` removed (Zitadel resources moved to customer-bootstrap;
 #     pavoInfra only receives the computed identity values as apiParameters).
 # -----------------------------------------------------------------------------
@@ -56,7 +51,7 @@ terraform {
       # provider-level config and fails with "elasticsearch client is not
       # configured." See Elastic issue #546. v0.15+ documents
       # `elasticsearch_connection` as fully supported (non-deprecated), which
-      # is the path PR #112 relies on.
+      # is the path this module relies on.
       version = "~> 0.15"
     }
     tls = {
@@ -73,7 +68,8 @@ terraform {
     }
   }
 
-  # Omnistrate manages Terraform state internally - do not add backend blocks
+  # Omnistrate manages the Terraform state (Kubernetes Secrets in the cell's
+  # omnistrate-terraform namespace) - do not add backend blocks
 }
 
 provider "aws" {
@@ -99,7 +95,7 @@ data "aws_eks_cluster" "primary" {
 # Each provider runs `aws eks get-token` per Kubernetes API request, so the
 # token is short-lived and auto-refreshed — a long apply cannot outlive a
 # single static STS token. This relies on the AWS CLI being present on the
-# Omnistrate Terraform runner image (Omnistrate added it in 2026-05; the
+# Omnistrate Terraform runner image (the
 # runner's execution role provides credentials, region is passed explicitly).
 
 locals {
@@ -132,11 +128,8 @@ provider "kubectl" {
 }
 
 # -----------------------------------------------------------------------------
-# Helm provider — kept around the `removed { helm_release.policy_controller }`
-# shim at the bottom of main.tf. No active resources consume helm in pavoInfra
-# anymore: ESO + Reloader live in pavo-bootstrap-aws, and the Sigstore Policy
-# Controller release that briefly used helm here (PR #90) also moved to
-# bootstrap. Drop the provider + the shim in the same cleanup PR.
+# Helm provider — used by helm_release.temporal (temporal_self_hosted.tf) and by
+# the `removed { helm_release.policy_controller }` shim at the bottom of main.tf.
 # Auth mirrors the kubernetes/kubectl providers above.
 # -----------------------------------------------------------------------------
 provider "helm" {
@@ -157,17 +150,17 @@ provider "ec" {
 }
 
 # Elasticstack provider — sources its connection from ec_deployment.onboarding_es.
-# An earlier attempt (#112) moved this to a resource-level elasticsearch_connection
+# An earlier attempt moved this to a resource-level elasticsearch_connection
 # block with an empty provider here, on the theory that terraform destroy could then
 # succeed even when ec_deployment had been deleted out-of-band. In practice the
 # elasticstack provider only uses the resource-level block at Create/Update/Delete,
 # NOT at refresh — refresh uses the provider client configured here. With an empty
 # provider the client has no endpoint, refresh of any in-state elasticstack_*
 # resource fails immediately with "Unable to get Elasticsearch client", and the
-# upgrade workflow can't even produce a plan. Reverted in #114.
+# upgrade workflow can't even produce a plan. Reverted.
 #
 # The "manual ec_deployment delete leaves state stuck" scenario this was trying to
-# fix no longer requires this hack: #112 also removed prevent_destroy from
+# fix no longer requires this hack: prevent_destroy was removed from
 # ec_deployment, so normal terraform destroy handles it via dependency order
 # (app_api_key destroys before ec_deployment, both still in state at plan time).
 provider "elasticstack" {

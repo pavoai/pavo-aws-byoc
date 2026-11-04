@@ -1,8 +1,8 @@
 # =============================================================================
-# Observability convergence barrier (Phase 4)
+# Observability convergence barrier
 # =============================================================================
 # INVARIANT:
-#   A newly created cell must not complete Phase 4 successfully unless the
+#   A newly created cell must not complete its first instance apply unless the
 #   minimum observability data path has converged at least once.
 #
 # This is a ONE-TIME CREATION ASSERTION, not a permanent health check. Terraform
@@ -16,12 +16,11 @@
 #     would say so.
 #   - If kube-state-metrics is down, every kube_* series disappears and the rules
 #     compare EMPTY VECTORS — they stop firing rather than alerting.
-#   Both are load-bearing, not hypothetical: kube-state-metrics sat in
-#   CrashLoopBackOff on the dev cell for 25 days behind a NetworkPolicy that
-#   denied the API ClusterIP, and no alert fired the entire time, because the
-#   alerts depended on the component that was down.
+#   Both are load-bearing: a kube-state-metrics stuck behind a NetworkPolicy
+#   that denies the API ClusterIP fires no alert, because the alerts depend on
+#   the component that is down.
 #
-#   This barrier runs from the Phase-4 execution context — the Omnistrate runner,
+#   This barrier runs from the instance-apply execution context — the Omnistrate runner,
 #   outside the cluster's observability stack — which is precisely why it can see
 #   what that stack cannot say about itself.
 #
@@ -218,9 +217,9 @@ resource "kubernetes_job_v1" "observability_readiness" {
             # series, which is only true if kube-state-metrics is running AND
             # being scraped successfully.
             #
-            # This is the assertion that would have caught the 25-day
-            # kube-state-metrics outage on the dev cell, where every process
-            # above was healthy and no metrics about workloads existed.
+            # This is the assertion that catches a kube-state-metrics outage
+            # where every process above is healthy and no metrics about
+            # workloads exist.
             echo "asserting kube-state-metrics series are being served ..."
             series_ok=0
             while [ "$(remaining)" -gt 0 ]; do

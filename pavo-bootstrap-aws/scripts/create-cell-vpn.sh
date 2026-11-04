@@ -3,10 +3,11 @@
 # Customer side, cell-account creds. Re-runnable: reuses certs, endpoint and access entry.
 # Usage: AWS_PROFILE=<profile> ./scripts/create-cell-vpn.sh <eks-cluster-name> [client-cidr]
 set -euo pipefail
+umask 077  # the pki dir and the .ovpn hold private keys
 
 cell="${1:?usage: create-cell-vpn.sh <eks-cluster-name> [client-cidr]}"
 client_cidr="${2:-10.201.0.0/22}"  # must not overlap the VPC or other VPN profiles
-export AWS_REGION="${AWS_REGION:-us-east-1}"
+export AWS_REGION="${AWS_REGION:?set AWS_REGION to the cell region}"
 
 dir="$HOME/pavo-cvpn-$cell"
 mkdir -p "$dir" && cd "$dir"
@@ -28,6 +29,8 @@ cvpn="$(aws ec2 describe-client-vpn-endpoints \
   --query "ClientVpnEndpoints[?Status.Code!='deleted' && Status.Code!='deleting' && Tags[?Key=='Name' && Value=='pavo-cvpn-$cell']] | [0].ClientVpnEndpointId" \
   --output text)"
 if [ "$cvpn" = None ]; then
+  # Connection logging is off: no log group is created. Pass
+  # Enabled=true,CloudwatchLogGroup=<group> below if your policy needs connection logs.
   cert_arn="$(aws acm import-certificate \
     --certificate fileb://pki/issued/server.crt \
     --private-key fileb://pki/private/server.key \
@@ -45,6 +48,7 @@ if [ "$cvpn" = None ]; then
     --tag-specifications "ResourceType=client-vpn-endpoint,Tags=[{Key=Name,Value=pavo-cvpn-$cell}]" \
     --query ClientVpnEndpointId --output text)"
   aws ec2 associate-client-vpn-target-network --client-vpn-endpoint-id "$cvpn" --subnet-id "$subnet_id" >/dev/null
+  # Whole VPC: the EKS API ENIs and the internal NLB take addresses anywhere in it.
   aws ec2 authorize-client-vpn-ingress --client-vpn-endpoint-id "$cvpn" \
     --target-network-cidr "$vpc_cidr" --authorize-all-groups >/dev/null
 fi
@@ -77,4 +81,5 @@ Ready. AWS VPN Client -> File -> Manage Profiles -> Add Profile -> $profile -> C
 Disconnect any other profile routing $vpc_cidr first.
 Check: nc -z -G 5 \$(dig +short \$(aws eks describe-cluster --name $cell --query cluster.endpoint --output text | cut -d/ -f3) | head -1) 443
 Teardown: aws ec2 disassociate-client-vpn-target-network ... && aws ec2 delete-client-vpn-endpoint --client-vpn-endpoint-id $cvpn
+          aws eks delete-access-entry --cluster-name $cell --principal-arn $role_arn   # cluster-admin persists until removed
 EOF

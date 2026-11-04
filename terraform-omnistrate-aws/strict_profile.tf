@@ -38,5 +38,9 @@ resource "terraform_data" "strict_hosting_guard" {
         or recreate the instance.
       EOT
     }
+    precondition {
+      condition     = var.network_posture != "strict" || var.redis_security_phase == "enforced"
+      error_message = "network_posture = \"strict\" requires redis_security_phase = enforced. Create strict instances with it; an existing instance steps off -> tls_preferred -> tls_required -> enforced first."
+    }
   }
 }

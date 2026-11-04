@@ -2,7 +2,7 @@
 
 Generated from Pavo's Omnistrate service definition and this module's variable
 declarations. It lists every input of the module and where its value comes
-from when Omnistrate runs it. 99 variables in total.
+from when Omnistrate runs it.
 
 ## Instance parameters
 
@@ -12,8 +12,8 @@ product exposes them).
 | Variable | Parameter | Type | Required | Modifiable after create | Description |
 |---|---|---|---|---|---|
 | `amplitude_api_key` | `amplitude_api_key` | Password | no | yes | Amplitude analytics API key for this tenant. Per-customer; set at instance create and rotate via instance modify. Empty disables Amplitude tracking in intern. |
-| `anthropic_api_key` | `anthropic_api_key` | Password | yes | yes | Anthropic API key for this tenant (used by tribal V8 book generation fallback/sub-generators). Per-customer; set at instance create and rotate via instance modify. The snake_case key is the canonical name — do NOT pass `anthropicApiKey` (camelCase) on modify, Omnistrate accepts unknown keys silently and the snake_case slot stays empty. |
-| `app_domain` | `app_domain` | String | no | yes | Public domain the app is served on: frontend at https://<app_domain>, API at https://api.<app_domain>. Empty auto-derives <customer_name>.<base_domain> (e.g. <customer>.pavoai.dev). Set to serve a custom domain, e.g. app.pavoai.com for the multi-tenant prod instance. |
+| `anthropic_api_key` | `anthropic_api_key` | Password | no | yes | Anthropic API key for this tenant. Unused (Claude runs keyless via Bedrock); optional, kept for existing-instance compatibility. The snake_case key is the canonical name — do NOT pass `anthropicApiKey` (camelCase) on modify, Omnistrate accepts unknown keys silently and the snake_case slot stays empty. |
+| `app_domain` | `app_domain` | String | no | yes | Public domain the app is served on: frontend at https://<app_domain>, API at https://api.<app_domain>. Empty auto-derives <customer_name>.<base_domain> (e.g. <customer>.pavoai.dev). Set to serve a custom domain, e.g. app.example.com. |
 | `auth_hostname` | `auth_hostname` | String | no | yes | Public hostname for the in-VPC Zitadel (zitadel_mode=self_hosted only). Empty auto-derives auth.<customer_name>.<base_domain>. Set to bring your own domain. |
 | `aws_microvm_image_arn` | `aws_microvm_image_arn` | String | no | yes | Existing-image override. Supply ARN, region and matching secret together; mutually exclusive with managed image mode. |
 | `aws_microvm_image_revision` | `aws_microvm_image_revision` | String | no | yes | Immutable release identifier for managed MicroVM image publication. Changing this creates a new image/secret pair; preserve old task routing and validate before switching. |
@@ -31,10 +31,10 @@ product exposes them).
 | `efs_iam_auth_enforced` | `efs_iam_auth_enforced` | Boolean | no | no | EFS mounts must be IAM-signed by the CSI node role (StorageClass gets the iam mount option). Set at creation only (not modifiable): flipping an existing instance would deny its already-bound PVs, which mount anonymously, on next remount. Create new instances with true. AWS BYOC only; unused on GCP. |
 | `elastic_cloud_region` | `elastic_cloud_region` | String | yes | no | Elastic Cloud region for the ES deployment (e.g. us-east-2). |
 | `email_enabled` | `email_enabled` | String | no | yes | Master switch for this instance's email path (login + all notifications). 'true' = email on (SES on AWS, Brevo on GCP); 'false' = strict/air-gapped (no backend wired, OTP endpoints 403, invitations return a copyable link). Empty (default) derives the POSTURE-AWARE default, preserving the old enable_email_login behavior: off for self_hosted/IdP-only instances, on for cloud. Replaces enable_email_l… |
-| `enable_lambda_microvms` | `enable_lambda_microvms` | Boolean | no | yes | DEPRECATED - has no effect. The Lambda MicroVM IAM grants are now rendered unconditionally on every AWS cell. Gating them on this per-instance parameter took the grants offline for 28-79 minutes on every deploy: an early deploy phase renders Terraform without the instance parameters, so the gate evaluated false and the workload role's policy was re-applied without the MicroVM statements. This par… |
+| `enable_lambda_microvms` | `enable_lambda_microvms` | Boolean | no | yes | DEPRECATED - has no effect. The Lambda MicroVM IAM grants are now rendered unconditionally on every AWS cell. Gating them on this per-instance parameter took the grants offline during every deploy: an early deploy phase renders Terraform without the instance parameters, so the gate evaluated false and the workload role's policy was re-applied without the MicroVM statements. This parameter is reta… |
 | `es_mode` | `es_mode` | String | no | yes | Elasticsearch backend for this instance: 'cloud' (default — external Elastic Cloud, unchanged behavior) or 'self_hosted' (in-VPC Elasticsearch via ECK, EBS under the customer CMK, snapshots to a customer S3 bucket). AWS BYOC only; unused on GCP. Modifiable post-create, but switching backends is operator-gated (ES snapshot/restore) — there is no automatic data migration. Observability backend is c… |
 | `exec_runner_hmac_required` | `exec_runner_hmac_required` | Boolean | no | yes | Require HMAC signatures for calls into exec-runner. |
-| `force_destroy_buckets` | `force_destroy_buckets` | Boolean | no | yes | Whether terraform destroy empties non-empty S3 / GCS buckets. Default false (destroy errors on non-empty bucket — the safe behavior). Set true for Dev/test instances where bucket contents are disposable. Applies to both AWS and GCP modules. |
+| `force_destroy_buckets` | `force_destroy_buckets` | Boolean | no | no | Whether terraform destroy empties non-empty S3 / GCS buckets. Set ONCE at instance creation; immutable. Default false (destroy errors on non-empty bucket, leaving it and its data in the customer account). Set true only for Dev/test instances where bucket contents are disposable. Applies to both AWS and GCP modules. |
 | `grafana_mode` | `grafana_mode` | String | no | yes | Observability (metrics/Grafana) backend for this instance: 'cloud' (default — telemetry egresses to Grafana Cloud) or 'self_hosted' — this instance's metrics are collected by the in-VPC observability stack (in-VPC Prometheus scrapes each app's /metrics endpoint; Grafana + Prometheus run in-cluster), with no metrics egress to Grafana Cloud. Separate from es_mode so observability can be flipped ind… |
 | `hubspot_api_key_override` | `hubspot_api_key` | Password | no | yes | Optional per-tenant override for the HubSpot API key used by api-gateway. When empty, the environment-level hubspot_api_key secret is used. |
 | `hubspot_client_secret_override` | `hubspot_client_secret` | Password | no | yes | Optional per-tenant override for the HubSpot client secret used by api-gateway webhook verification. When empty, the environment-level hubspot_client_secret secret is used. |
@@ -43,8 +43,8 @@ product exposes them).
 | `langfuse_host` | `langfuse_host` | String | no | yes | Langfuse host for api-gateway LLM tracing (supports self-hosted/EU instances). |
 | `langfuse_public_key` | `langfuse_public_key` | Password | no | yes | Per-tenant Langfuse public key for api-gateway LLM tracing. Only used when langfuse_enabled is true. |
 | `langfuse_secret_key` | `langfuse_secret_key` | Password | no | yes | Per-tenant Langfuse secret key for api-gateway LLM tracing. Only used when langfuse_enabled is true. |
-| `network_posture` | `network_posture` | String | no | no | Network egress posture for this instance: 'standard' (default — public registry/LB egress allowed, Pavo-managed dependencies) or 'strict' (dedicated zero-egress cell). Umbrella for always-together strict network controls (provider mirror, internal LB, default-deny NetworkPolicy, private CA). On strict, OpenTofu requires es_mode / grafana_mode / temporal_mode / zitadel_mode = self_hosted at CREATE… |
-| `openai_api_key` | `openai_api_key` | Password | yes | yes | OpenAI API key for this tenant. Per-customer; set at instance create and rotate via instance modify. The snake_case key is the canonical name — do NOT pass `openaiApiKey` (camelCase) on modify, Omnistrate accepts unknown keys silently and the snake_case slot stays empty. |
+| `network_posture` | `network_posture` | String | no | no | Network egress posture for this instance: 'standard' (default — public registry/LB egress allowed, Pavo-managed dependencies) or 'strict' (dedicated zero-egress cell). Umbrella for always-together strict network controls (internal LB, default-deny NetworkPolicy, ACM edge cert). On strict, the plan requires es_mode / grafana_mode / temporal_mode / zitadel_mode = self_hosted and redis_security_phas… |
+| `openai_api_key` | `openai_api_key` | Password | no | yes | OpenAI API key for this tenant. Optional; leave empty on Bedrock-only installs (llm_cloud_only=true, the default), and strict cells blank it regardless. Rotate via instance modify. The snake_case key is the canonical name — do NOT pass `openaiApiKey` (camelCase) on modify, Omnistrate accepts unknown keys silently and the snake_case slot stays empty. |
 | `parallel_api_key` | `parallel_api_key` | Password | no | yes | Parallel web-search API key for this tenant. Per-customer; set at instance create and rotate via instance modify. Empty disables Parallel web search in intern. |
 | `pavo_computer_backend` | `pavo_computer_backend` | String | no | yes | Legacy computer backend selector (for example: e2b). |
 | `primary_external_identity_provider_automation_enabled` | `primary_external_identity_provider_automation_enabled` | Boolean | no | yes | self_hosted only: provision the customer IdP + IdP-only login policy in-VPC. Requires the client_id/secret (+ oidc_issuer or saml_metadata_url or saml_metadata_xml_base64) below. |
@@ -70,7 +70,7 @@ product exposes them).
 | `task_agent_use_agent_computer_runtime` | `task_agent_use_agent_computer_runtime` | String | no | yes | Legacy master toggle for agent-computer runtime; "1" enables computer runtime paths. |
 | `temporal_codec_image` | `temporal_codec_image` | String | no | yes | Digest-pinned intern image providing the payload-codec HTTP server for the self-hosted Temporal Web UI (temporal_mode=self_hosted only). Must be a ghcr.io/pavoai image pinned @sha256 (terraform-validated), e.g. ghcr.io/pavoai/intern-temporal-worker@sha256:<digest>. The decode sidecar needs BOTH this AND a non-empty temporal_payload_codec_key — image-only enables nothing. Empty (default) = no code… |
 | `temporal_history_shards` | `temporal_history_shards` | String | no | no | numHistoryShards for the self-hosted Temporal cluster (temporal_mode=self_hosted only). FROZEN at cluster creation — Temporal cannot change shard count on an existing cluster, so set this at instance CREATE for a known-large customer. Power of two, 16-16384. Default 128 fits per-customer cell load with ~100x headroom. Ignored on cloud. |
-| `temporal_mode` | `temporal_mode` | String | no | no | Temporal hosting mode: 'cloud' (default — Temporal Cloud gdv7k, unchanged) or 'self_hosted' (per-instance Temporal server + dedicated RDS in this cluster; workflow state never leaves the VPC). Immutable per instance (shard count + PKI are frozen at cluster creation); requires grafana_mode=self_hosted. AWS BYOC only; unused on GCP. |
+| `temporal_mode` | `temporal_mode` | String | no | no | Temporal hosting mode: 'cloud' (default — Temporal Cloud, unchanged) or 'self_hosted' (per-instance Temporal server + dedicated RDS in this cluster; workflow state never leaves the VPC). Immutable per instance (shard count + PKI are frozen at cluster creation); requires grafana_mode=self_hosted. AWS BYOC only; unused on GCP. |
 | `temporal_payload_codec_key` | `temporal_payload_codec_key` | Password | no | yes | Temporal payload codec key for this tenant. Must be EMPTY or exactly 64 hex characters (32 bytes) — terraform-validated; generate with `openssl rand -hex 32`. A base64 value (44 chars, trailing '=') is REJECTED at pavoInfra plan time. Per-customer v0 static key; set at instance create and rotate via instance modify. WARNING: changing this on a live instance makes previously encrypted Temporal pay… |
 | `worker_proxy_routing_enabled` | `worker_proxy_routing_enabled` | Boolean | no | yes | Route sandbox worker egress through capability-proxy. |
 | `zitadel_idp_id` | `zitadel_idp_id` | String | no | no | Pavo-internal. Zitadel OAuth IdP ID (google / oidc). Empty for no-IdP or SAML customers. Produced by pavo-customer-bootstrap. |
@@ -110,24 +110,24 @@ Set by Pavo from its secret store; the values are never shown.
 | `modal_token_id` | The token ID for Modal cloud compute platform. |
 | `modal_token_secret` | The token secret for Modal cloud compute platform. |
 
+## Constants
+
+| Variable | Value | Description |
+|---|---|---|
+| `edge_certificate_arn` | `"{{ $pavoCert.out.certificate_arn }}"` | ACM certificate requested by the pavoCert resource (pavo-cert-aws). Strict posture waits for it to be ISSUED (see edge_certificate.tf); ignored on standard. |
+
 ## Module defaults
 
 Not set by Omnistrate, so the module's own default applies.
 
 | Variable | Default | Sensitive | Description |
 |---|---|---|---|
-| `account_id` | **required, no default** | no |  |
-| `base_domain` | default | no | Fallback base domain for customer frontends when app_domain is empty (e.g., 'pavoai.dev'). |
-| `db_instance_class` | default | no | RDS instance class for the PostgreSQL instance |
-| `elasticsearch_api_key` | default | yes | Elasticsearch API key (for imported clusters) |
-| `enable_vpc_endpoints` | default | no | Provision VPC interface endpoints (AWS PrivateLink) for Bedrock (control plane + runtime), KMS, Secrets Manager, ECR, SQS, SNS, STS, RDS, ElastiCache, EFS, IAM, and SES (when email is enabled) so those AWS API calls never traverse the public internet. Default true — small hourly cost per endpoint, and required for the zero-egress posture on strict BYOC (e.g. healthcare) and for instance tofu on a… |
-| `extra_cors_origins` | default | no | Additional S3 CORS origins for direct Terraform module consumers. Not exposed as an Omnistrate apiParameter. |
-| `postgres_engine_version` | default | no | RDS PostgreSQL engine version for the app + (self-hosted) Temporal databases. NOT hardcoded: AWS retires specific minor versions over time, and a pinned minor keeps working for existing (grandfathered) instances while silently breaking the NEXT new-instance create ("Cannot find version X for postgres"). Bump this default to a currently-creatable minor when AWS deprecates the old one. Check with:… |
-| `primary_external_identity_provider_saml_metadata_xml` | default | yes | self_hosted only: raw SAML metadata XML for direct Terraform callers. pavoInfra base64encodes this (the one allowed identity transform) before handing it to pavo-customer-bootstrap. When both XML forms are set, xml_base64 wins. |
-| `publisher_image` | default | no |  |
-| `redis_node_type` | default | no | ElastiCache node type for gateway, intern, and onboarding Redis. |
-| `region` | **required, no default** | no |  |
-| `requested_enabled` | default | no |  |
-| `revision` | default | no |  |
-| `stored_config` | default | no | Previously persisted non-secret release configuration, or empty when not enabled yet. |
-| `zitadel_provisioner_image` | default | no | Digest-pinned zitadel-provisioner image (ghcr.io/pavoai/zitadel-provisioner@sha256:...). Built + cosign-signed + attested (SBOM/vuln/OpenVEX) by the zitadel-provisioner-omnistrate Cloud Build trigger; pin the resulting digest here. See zitadel-provisioner/SIGNING.md. |
+| `base_domain` | `"pavoai.dev"` | no | Fallback base domain for customer frontends when app_domain is empty (e.g., 'pavoai.dev'). |
+| `db_instance_class` | `"db.r6g.large"` | no | RDS instance class for the PostgreSQL instance |
+| `elasticsearch_api_key` | `""` | yes | Elasticsearch API key (for imported clusters) |
+| `enable_vpc_endpoints` | `true` | no | Provision VPC interface endpoints (AWS PrivateLink) for Bedrock (control plane + runtime), KMS, Secrets Manager, ECR, SQS, SNS, STS, RDS, ElastiCache, EFS, IAM, ACM (strict only), and SES (when email is enabled) so those AWS API calls never traverse the public internet. Default true — small hourly cost per endpoint, and required for the zero-egress posture on strict BYOC (e.g. healthcare) and for… |
+| `extra_cors_origins` | `[]` | no | Additional S3 CORS origins for direct Terraform module consumers. Not exposed as an Omnistrate apiParameter. |
+| `postgres_engine_version` | `"16.14"` | no | RDS PostgreSQL engine version for the app + (self-hosted) Temporal databases. NOT hardcoded: AWS retires specific minor versions over time, and a pinned minor keeps working for existing (grandfathered) instances while silently breaking the NEXT new-instance create ("Cannot find version X for postgres"). Bump this default to a currently-creatable minor when AWS deprecates the old one. Check with:… |
+| `primary_external_identity_provider_saml_metadata_xml` | `""` | yes | self_hosted only: raw SAML metadata XML for direct Terraform callers. pavoInfra base64encodes this (the one allowed identity transform) before handing it to pavo-customer-bootstrap. When both XML forms are set, xml_base64 wins. |
+| `redis_node_type` | `"cache.t3.medium"` | no | ElastiCache node type for gateway, intern, and onboarding Redis. |
+| `zitadel_provisioner_image` | `"ghcr.io/pavoai/zitadel-provisioner@sha256:29d4197153e4621201537ea72c06631387ac143eb97bd69929a70ad224bc4ef3"` | no | Digest-pinned zitadel-provisioner image (ghcr.io/pavoai/zitadel-provisioner@sha256:...). Built + cosign-signed + attested (SBOM/vuln/OpenVEX) by the zitadel-provisioner-omnistrate Cloud Build trigger; pin the resulting digest here. |

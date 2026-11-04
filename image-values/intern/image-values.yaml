@@ -1,0 +1,5 @@
+image:
+  tag: "bf2c146"
+temporalWorkers:
+  image:
+    tag: "bf2c146"

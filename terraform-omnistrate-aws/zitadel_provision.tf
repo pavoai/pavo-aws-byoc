@@ -13,12 +13,10 @@
 # vars; self_hosted mode provisions them here, so it needs the raw inputs.)
 # -----------------------------------------------------------------------------
 variable "zitadel_provisioner_image" {
-  description = "Digest-pinned zitadel-provisioner image (ghcr.io/pavoai/zitadel-provisioner@sha256:...). Built + cosign-signed + attested (SBOM/vuln/OpenVEX) by the zitadel-provisioner-omnistrate Cloud Build trigger; pin the resulting digest here. See zitadel-provisioner/SIGNING.md."
+  description = "Digest-pinned zitadel-provisioner image (ghcr.io/pavoai/zitadel-provisioner@sha256:...). Built + cosign-signed + attested (SBOM/vuln/OpenVEX) by the zitadel-provisioner-omnistrate Cloud Build trigger; pin the resulting digest here."
   type        = string
-  # Signed OpenTofu build from the zitadel-provisioner-omnistrate-common trigger
-  # (Cloud Build 473ebe03, zero-egress-ecr-workflow@d4503cd). cosign-signed by
-  # cloud-build-zitadel-prov@onboarding-455713 + SBOM/vuln/OpenVEX attestations;
-  # OS scan clean (0 findings).
+  # cosign-signed by cloud-build-zitadel-prov@onboarding-455713 + SBOM/vuln/OpenVEX
+  # attestations.
   default = "ghcr.io/pavoai/zitadel-provisioner@sha256:29d4197153e4621201537ea72c06631387ac143eb97bd69929a70ad224bc4ef3"
 }
 
@@ -233,7 +231,8 @@ resource "kubernetes_service_account_v1" "zitadel_provision" {
   depends_on = [kubectl_manifest.instance_namespace]
 }
 
-# The provision SA writes the two handoff objects (and reads the machine key).
+# The provision SA writes the two handoff objects via kubectl apply (GET, then
+# POST or PATCH). create can't be name-scoped; get/patch are.
 resource "kubernetes_role_v1" "zitadel_provision" {
   count = local.zitadel_count
   metadata {
@@ -243,7 +242,19 @@ resource "kubernetes_role_v1" "zitadel_provision" {
   rule {
     api_groups = [""]
     resources  = ["secrets", "configmaps"]
-    verbs      = ["get", "create", "patch"]
+    verbs      = ["create"]
+  }
+  rule {
+    api_groups     = [""]
+    resources      = ["secrets"]
+    resource_names = [local.zitadel_backend_secret]
+    verbs          = ["get", "patch"]
+  }
+  rule {
+    api_groups     = [""]
+    resources      = ["configmaps"]
+    resource_names = [local.zitadel_frontend_config]
+    verbs          = ["get", "patch"]
   }
 }
 
@@ -307,9 +318,9 @@ resource "kubernetes_job_v1" "zitadel_provision" {
     aws_s3_bucket_versioning.zitadel_state,
     kubernetes_secret_v1.zitadel_idp_client_secret,
     kubernetes_secret_v1.zitadel_idp_saml_metadata,
-    # Sigstore signaturePullSecret must exist before this Job's (signed,
-    # enforce-gated) provisioner image is admitted — else the webhook 401s on
-    # the private-ghcr signature fetch and denies the pod.
+    # Sigstore signaturePullSecret must exist before this Job is admitted, so a
+    # CIP matching the provisioner image can fetch signatures from private ghcr
+    # instead of 401ing and denying the pod.
     kubernetes_secret_v1.ghcr_signature_pull,
   ]
 
@@ -342,13 +353,6 @@ resource "kubernetes_job_v1" "zitadel_provision" {
         host_aliases {
           ip        = kubernetes_service_v1.zitadel[0].spec[0].cluster_ip
           hostnames = [local.zitadel_auth_host]
-        }
-        # The provisioner init image is a PRIVATE ghcr.io/pavoai repo, so kubelet
-        # needs a pull credential (separate from the Sigstore signaturePullSecret
-        # used for verification — that one is on the CIP). Reuse the same
-        # per-namespace secret pavoInfra materializes.
-        image_pull_secrets {
-          name = "pavo-ghcr-signature-pull"
         }
         # The provisioner image runs as uid 1000; fsGroup makes the /handoff
         # emptyDir + mounted secrets writable/readable by that GID. (No pod-wide
@@ -405,7 +409,7 @@ resource "kubernetes_job_v1" "zitadel_provision" {
             name  = "HANDOFF_DIR"
             value = "/handoff"
           }
-          # Provider endpoint (internal HTTPS + machine key; F9/F10).
+          # Provider endpoint (internal HTTPS + machine key).
           env {
             name  = "TF_VAR_zitadel_domain"
             value = local.zitadel_auth_host
@@ -456,7 +460,7 @@ resource "kubernetes_job_v1" "zitadel_provision" {
             value = var.primary_external_identity_provider_client_id
           }
           # Sourced from a K8s Secret (not inline value) so the IdP client secret
-          # does not land in the Pod spec / etcd pod object (INV-7).
+          # does not land in the Pod spec / etcd pod object.
           env {
             name = "TF_VAR_primary_external_identity_provider_client_secret"
             value_from {
@@ -547,8 +551,8 @@ resource "kubernetes_job_v1" "zitadel_provision" {
             # base64-encoded (matches the central pass-through contract).
             b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
 
-            # api-gateway secret — client secret + org/idp live ONLY here (INV-7).
-            # AGENTS.md exception: no identity LOGIC lives here — the handoff only
+            # api-gateway secret — client secret + org/idp live ONLY here.
+            # No identity LOGIC lives here — the handoff only
             # materializes pavo-customer-bootstrap outputs ($cid, $csec, $iss, …
             # via `get zitadel_*`) into the K8s secret its in-namespace consumers
             # read, with base64encode as the one allowed transform. It must run in

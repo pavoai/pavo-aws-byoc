@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.5"
+  required_version = ">= 1.7"
 
   # No backend block here. Add a separate `backend.tf` file with your chosen
   # backend BEFORE running `terraform init`. See README "Configuring Terraform
@@ -104,7 +104,7 @@ locals {
   # `aws eks get-token` authenticates against something that cannot be dialled.
   # Setting `kubeconfig_path` points every Kubernetes-facing provider at a
   # ready-made kubeconfig instead — in practice the one produced by
-  # `omnistrate-ctl deployment-cell update-kubeconfig <cell> --role cluster-admin`,
+  # `omnistrate-ctl deployment-cell update-kubeconfig <cell> --role cluster-admin` (run by Pavo),
   # which targets an Omnistrate-side proxy and uses client certificates rather than
   # an exec plugin. That proxy path is gated by the account CloudFormation
   # parameter `K8sDebugAccessEnabled`, so it is the customer's switch, not ours.

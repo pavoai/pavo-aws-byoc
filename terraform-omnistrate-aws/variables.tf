@@ -150,7 +150,7 @@ variable "cell_kms_key_arn" {
     # Commercial AWS partition only. Accepts key/ and alias/ prefixes, MRK keys
     # (mrk-*), UUIDs, and arbitrary alias names.
     condition     = can(regex("^arn:aws:kms:[a-z0-9-]+:[0-9]+:(key|alias)/.+$", var.cell_kms_key_arn))
-    error_message = "cell_kms_key_arn must be a valid commercial AWS KMS key or alias ARN (arn:aws:kms:...). GovCloud / China partitions are not supported in this PR — see variable description."
+    error_message = "cell_kms_key_arn must be a valid commercial AWS KMS key or alias ARN (arn:aws:kms:...). GovCloud / China partitions are not supported — see variable description."
   }
 }
 
@@ -201,9 +201,9 @@ variable "es_mode" {
 
 # -----------------------------------------------------------------------------
 # Network posture — the "standard vs strict" zero-egress knob for a dedicated
-# customer cell. strict is machine-gated on cell readiness (private CA + CNI
-# NetworkPolicy support) so it cannot be entered half-configured; see the
-# readiness check in network_policies.tf.
+# customer cell. strict is machine-gated on cell readiness (CNI NetworkPolicy
+# support) so it cannot be entered half-configured; see the readiness check in
+# network_policies.tf.
 # -----------------------------------------------------------------------------
 variable "network_posture" {
   description = <<-EOT
@@ -211,22 +211,20 @@ variable "network_posture" {
       - "standard" : today's behaviour, unchanged.
       - "strict"   : per-instance default-deny egress NetworkPolicies (only in-VPC
                      + gateway/interface-endpoint destinations reachable), an
-                     internal (not internet-facing) LB scheme, and private-CA
-                     ingress certs. Gated — a
-                     strict instance fails fast unless the cell has the private CA
-                     installed (/pavo/cells/<cluster>/private_ca_ready) AND CNI
+                     internal (not internet-facing) LB scheme with the ACM edge
+                     cert from pavoCert, and self-signed ingress leaves behind it.
+                     Gated — a strict instance fails fast unless the cell has CNI
                      NetworkPolicy support (/pavo/cells/<cluster>/network_policy_ready).
                      Also requires es_mode / grafana_mode / temporal_mode /
                      zitadel_mode = self_hosted at CREATE (terraform_data.strict_hosting_guard).
-                     Helm layers (spec-byoc.yaml) force Bedrock-only LLM, mantle off,
+                     Helm layers (Omnistrate spec) force Bedrock-only LLM, mantle off,
                      pavo_custom computer, and empty SaaS keys. email_enabled / IdP /
                      GitHub-Bitbucket stay independently assigned.
-    NOT claimed by strict, and must not be told to a customer until proven on
-    a test cell: suppression of the public DNS record. strict sets an empty
-    external-dns hostname annotation, but that is a no-op if external-dns runs
-    with --source=ingress rather than --source=service, and
+    NOT claimed by strict: suppression of the public DNS record. The external-dns
+    hostname is kept on purpose (blanking it leaves Omnistrate monitoring
+    UNHEALTHY); the record points at the internal LB, and
     endpointConfiguration.networkingType stays PUBLIC (an Omnistrate-owned
-    field). See the aws-lb-internal block in spec/spec-byoc.yaml.
+    field). See the aws-lb-internal block in the Omnistrate spec.
 
     Dedicated strict cells only (1 cell = 1 customer). AWS BYOC only.
   EOT
@@ -240,10 +238,10 @@ variable "network_posture" {
 }
 
 locals {
-  # TF-managed ingresses (Zitadel, Kibana, Temporal UI). A strict cell's LB is
-  # internal, so public ACME can't validate; same switch the spec applies to
-  # the helm ingresses.
-  ingress_cluster_issuer = var.network_posture == "strict" ? "pavo-private-ca" : "pavo-letsencrypt-prod"
+  # TF-managed ingresses (Zitadel, Kibana, Temporal UI). On strict the NLB
+  # terminates TLS with the ACM cert and never validates nginx's leaf, and ACME
+  # can't issue without egress; same switch the spec applies to the helm ingresses.
+  ingress_cluster_issuer = var.network_posture == "strict" ? "pavo-selfsigned" : "pavo-letsencrypt-prod"
 }
 
 # -----------------------------------------------------------------------------
@@ -251,9 +249,8 @@ locals {
 # Controls only where apps SEND telemetry (Grafana Cloud vs in-VPC). The in-VPC
 # observability stack itself is provisioned per-cell by pavo-bootstrap-aws
 # (var.enable_observability), not by this per-instance flag. It is NOT an
-# Omnistrate cell amenity: the amenity module was removed in a3fef42, and
-# scripts/ownership-rules-canonical.md records cell substrate belonging in
-# pavo-bootstrap-aws behind an enable_* flag as a hard rule.
+# Omnistrate cell amenity: the amenity module was removed; cell substrate
+# belongs in pavo-bootstrap-aws behind an enable_* flag as a hard rule.
 # -----------------------------------------------------------------------------
 variable "grafana_mode" {
   description = <<-EOT
@@ -266,8 +263,9 @@ variable "grafana_mode" {
                         telemetry egress). Requires the cell to have been
                         bootstrapped with enable_observability = true
                         (pavo-bootstrap-aws) so a receiver exists.
-    Echoed as an output (self_hosted has no per-instance TF resources here — the
-    stack is cell-scoped and owned by pavo-bootstrap-aws). AWS BYOC only.
+    Echoed as an output (self_hosted adds only the readiness Job in
+    observability_readiness.tf — the stack is cell-scoped and owned by
+    pavo-bootstrap-aws). AWS BYOC only.
   EOT
   type        = string
   default     = "cloud"
@@ -493,7 +491,7 @@ variable "temporal_mode" {
   description = <<-EOT
     Where this instance's Temporal cluster lives — the "cloud vs in-VPC" knob for
     workflow orchestration ONLY.
-      - "cloud"       : Temporal Cloud (pavo-<customer>-intern.gdv7k.tmprl.cloud)
+      - "cloud"       : Temporal Cloud (pavo-<customer>-intern namespace)
                         — the default, unchanged behavior. intern consumes the
                         existing $secret.temporal_tls_cert/key client certs.
       - "self_hosted" : a per-instance Temporal server (frontend/history/matching/
@@ -566,9 +564,10 @@ variable "gemini_api_key" {
 }
 
 variable "anthropic_api_key" {
-  description = "Per-tenant Anthropic API key, supplied by the `anthropic_api_key` apiParameter at instance create/modify. Used by tribal V8 book generation fallback/sub-generators; plumbed through to onboarding Helm via the pavoInfra.anthropic_api_key output."
+  description = "Per-tenant Anthropic API key, supplied by the `anthropic_api_key` apiParameter. Unused: Claude runs keyless via Bedrock. Kept for existing-instance compatibility; exposed as the pavoInfra.anthropic_api_key output."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "bitbucket_oauth_client_id" {
@@ -588,6 +587,7 @@ variable "openai_api_key" {
   description = "Per-tenant OpenAI API key, supplied by the `openai_api_key` apiParameter at instance create/modify. Plumbed through to api-gateway / intern / onboarding Helm via the pavoInfra.openai_api_key output."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "e2b_api_key" {
@@ -647,7 +647,7 @@ variable "worker_proxy_routing_enabled" {
 }
 
 variable "enable_lambda_microvms" {
-  description = "DEPRECATED — no longer read by any resource; setting it changes nothing. The Lambda MicroVM IAM grants are now rendered unconditionally (see the MicroVM statements in main.tf) because gating them on this per-instance parameter took the grants offline for 28-79 minutes on every deploy. Retained as a declared variable ONLY so the spec's tfvars pass-through and the parameter values already stored on live Omnistrate instances stay valid; removing it here, in spec/spec-byoc.yaml and in the apiParameter declarations is a follow-up change, not part of the incident fix. The account-level control is now the permission boundary (pavo-bootstrap-aws/policy-statements.json)."
+  description = "DEPRECATED — no longer read by any resource; setting it changes nothing. The Lambda MicroVM IAM grants are now rendered unconditionally (see the MicroVM statements in main.tf) because gating them on this per-instance parameter took the grants offline during every deploy. Retained as a declared variable ONLY so the spec's tfvars pass-through and the parameter values already stored on live Omnistrate instances stay valid; removing it here and in the Omnistrate spec is a follow-up change. The account-level control is now the permission boundary (pavo-bootstrap-aws/policy-statements.json)."
   type        = bool
   default     = false
 }
@@ -658,11 +658,10 @@ variable "enable_lambda_microvms" {
 # 15 values. customer-bootstrap is the single source of truth; pavoInfra only
 # passes them through to outputs (with base64encode as the one allowed
 # transform). Do NOT add IdP/Zitadel computation logic here — push it to
-# customer-bootstrap if it's missing. See README → "Ownership rules".
+# customer-bootstrap if it's missing.
 #
 # Empty strings are legitimate values for the IdP / SAML fields (no-IdP and
-# non-SAML customers). The 5 core Zitadel fields MUST be non-empty —
-# the terraform_data validate block in main.tf enforces that.
+# non-SAML customers). The 5 core Zitadel fields MUST be non-empty.
 
 variable "zitadel_org_id" {
   description = "Zitadel org ID (pass-through from pavo-customer-bootstrap)."
@@ -783,6 +782,9 @@ locals {
   # replaces the former `omnistrate_instance` key (single-write; nothing else
   # consumes the old key). Team-level cost-center lives in dim_namespace_owner,
   # not here (per-customer infra has no single owning team).
+  # managed_by + instance gate every runner IAM write (IAMWriteInstanceRoles in
+  # pavo-bootstrap-aws/policy-statements.json); renaming either key locks the
+  # runner out of existing roles.
   pavo_standard_tags = {
     managed_by  = "pavo"
     customer    = var.customer_name
@@ -831,7 +833,13 @@ variable "create_final_snapshot" {
 }
 
 variable "force_destroy_buckets" {
-  description = "Whether terraform destroy empties non-empty S3 buckets. Default false: destroy errors on non-empty bucket (safe behavior). Set true for Dev/test instances where bucket contents are disposable."
+  description = "Whether terraform destroy empties non-empty S3 buckets. Fixed at instance creation (Omnistrate param is immutable). Default false: destroy errors on non-empty bucket (safe behavior). Set true for Dev/test instances where bucket contents are disposable."
   type        = bool
   default     = false
+}
+
+variable "edge_certificate_arn" {
+  description = "ACM certificate requested by the pavoCert resource (pavo-cert-aws). Strict posture waits for it to be ISSUED (see edge_certificate.tf); ignored on standard."
+  type        = string
+  default     = ""
 }

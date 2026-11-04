@@ -1,10 +1,10 @@
 # =============================================================================
-# In-VPC observability stack (cell-scoped, opt-in via var.enable_observability)
+# In-VPC observability stack (cell-scoped, on by default, gated by var.enable_observability)
 # =============================================================================
 # For customers whose telemetry must not leave the VPC (grafana_mode=self_hosted).
 # Installs, into the `pavo-observability` namespace:
 #   - Postgres        (Grafana metadata backend)
-#   - Prometheus      (in-VPC TSDB; scrapes ES exporter + KSM + node-exporter;
+#   - Prometheus      (in-VPC TSDB; scrapes the named jobs in prometheus-values.yaml.tftpl;
 #                      accepts remote-write from the OTel collector)
 #   - Grafana         (in-VPC UI, internal ingress, dashboards as-code)
 #   - OTel collector  (receives app OTLP metrics -> remote-writes to Prometheus)
@@ -12,10 +12,11 @@
 # Zero telemetry egress: no metrics/logs leave the VPC, and no AWS API
 # dependencies — all metrics come from in-cluster scrapes.
 #
-# Secrets are generated with random_password (bootstrap state is customer-local,
-# so they stay in the customer's control; the break-glass Role cannot read k8s
-# Secrets). This is the customer-applied analogue of the ES fileRealm ESO
-# generators (which live in Omnistrate-managed state, hence ESO there).
+# Secrets are generated with random_password in customer-local bootstrap state.
+# The inert support Role (manifests/role.yaml) cannot read k8s Secrets; the
+# Omnistrate runner's cluster-admin access entry (main.tf) and the customer-gated
+# K8sDebugAccess path can, as can any cluster-admin. This is the customer-applied
+# analogue of the ES fileRealm ESO generators (Omnistrate-managed state, hence ESO).
 
 locals {
   obs_count = var.enable_observability ? 1 : 0
@@ -37,8 +38,8 @@ locals {
   ) : ""
 
   # Pavo alert leg (sanitizer + its route). Off unless explicitly enabled AND a
-  # real signed image digest is provided — the cell ClusterImagePolicy admits only
-  # the signed digest, so there is nothing to deploy until the signing build runs.
+  # signed image digest is provided — the image is pinned by digest, so there is
+  # nothing to deploy until the signing build runs.
   obs_sanitizer_enabled = var.enable_observability && var.pavo_app_alerts_enabled && var.sanitizer_image != ""
 
   # imagePullSecret the sanitizer pod uses to pull its private ghcr.io/pavoai
@@ -328,7 +329,7 @@ resource "kubernetes_stateful_set_v1" "observability_postgres" {
 # carries `wait_for_rollout = false`). This is deliberate and load-bearing, not a
 # way to make a flaky apply go green.
 #
-# The problem it solves: this module is applied by the CUSTOMER (Phase 3), which
+# The problem it solves: this module is applied by the CUSTOMER, which
 # on a brand-new cell happens BEFORE the cell has converged. At that moment there
 # are no schedulable worker nodes — the only nodes present carry Omnistrate's
 # `CriticalAddonsOnly=true:NoSchedule` taint. Postgres additionally needs a PVC
@@ -336,10 +337,10 @@ resource "kubernetes_stateful_set_v1" "observability_postgres" {
 # So the pods legitimately cannot start yet, the default waits time out, and the
 # whole apply fails on infrastructure that is otherwise perfectly correct.
 #
-# That is exactly what happened on an early customer onboarding: the operator had to
-# apply once with enable_observability = false, wait for the cell to reach
-# RUNNING, then flip it to true and apply again. Encoding a manual two-phase
-# dance as a customer-facing instruction is the bug; these flags remove it.
+# Without these flags the operator would have to apply once with
+# enable_observability = false, wait for the cell to reach RUNNING, then flip it
+# to true and apply again. Encoding a manual two-phase dance as a customer-facing
+# instruction is the bug; these flags remove it.
 #
 # What this does NOT do:
 #   - It does not skip Helm hooks. `wait = false` only skips the post-install
@@ -352,7 +353,7 @@ resource "kubernetes_stateful_set_v1" "observability_postgres" {
 #   - It does not change `count`, so `enable_observability` still structurally
 #     decides whether these objects exist at all.
 #   - It does not mean nobody checks. It moves the readiness assertion to where
-#     it belongs: the Phase-4 convergence barrier in
+#     it belongs: the convergence barrier in
 #     terraform-omnistrate-aws/observability_readiness.tf, which runs from the
 #     Omnistrate runner once the cell is actually up. That barrier hard-fails the
 #     instance apply if Prometheus, Alertmanager, Grafana (and Postgres behind
@@ -449,7 +450,8 @@ resource "helm_release" "observability_grafana" {
   version    = var.observability_grafana_chart_version
   values = [
     templatefile("${path.module}/observability/grafana-values.yaml.tftpl", {
-      grafana_host = var.observability_grafana_host
+      grafana_host   = var.observability_grafana_host
+      cluster_issuer = var.network_posture == "strict" ? "pavo-selfsigned" : "pavo-letsencrypt-prod"
     }),
     yamlencode({
       image = {
@@ -559,8 +561,8 @@ data "kubectl_file_documents" "obs_netpol" {
 
   # An empty Service CIDR would render `cidr: ` into the egress policy. That is
   # the dangerous failure here, not a loud one: it produces a policy that applies
-  # but matches nothing, which is exactly how kube-state-metrics ended up unable
-  # to reach the API for 25 days without a single alert. Fail the plan instead.
+  # but matches nothing, which leaves kube-state-metrics unable to reach the API
+  # without a single alert. Fail the plan instead.
   lifecycle {
     precondition {
       condition     = local.cell_service_cidr != ""
