@@ -12,7 +12,7 @@
 #     count-gated (seen on a live cell).
 #   - A plan-time fetch would need tf-executor egress, which default-deny
 #     cells restrict; a pinned, reviewed root is also the right posture for
-#     regulated zero-egress customers — no trust anchor changing under us.
+#     regulated strict-posture customers — no trust anchor changing under us.
 #
 # New region: add its "Amazon RDS <region> Root CA RSA2048 G1" entry from
 #   curl -s https://truststore.pki.rds.amazonaws.com/<region>/<region>-bundle.pem

@@ -143,7 +143,7 @@ variable "efs_iam_auth_enforced" {
 }
 
 variable "cell_kms_key_arn" {
-  description = "The cell's single customer-managed KMS key ARN (or alias ARN) — encrypts everything this instance stores at rest under the customer's own key: RDS storage + master-password secret, ElastiCache Redis, SNS topics, EFS, self-hosted Elasticsearch EBS + snapshots, and Zitadel resources (and, in pavo-bootstrap-aws, the in-VPC observability volumes). One key for the whole deployment: least customer effort, uniform key custody. Renamed from db_kms_key_arn (it never only covered the DB). Required. Both 'arn:aws:kms:...:key/UUID' and 'arn:aws:kms:...:alias/name' formats are accepted. NOTE: this supports only the commercial AWS partition (arn:aws:...). GovCloud and China partitions require partition-aware policy resources (policy-statements.json hardcodes 'arn:aws:' in many resource ARNs); deferred to a follow-up."
+  description = "The cell's single customer-managed KMS key ARN (or alias ARN) — encrypts, under the customer's own key, the data stores this instance creates (new resources; Kubernetes Secrets and the Omnistrate-held Terraform state are not under it): RDS storage + master-password secret, ElastiCache Redis, SNS topics, EFS, self-hosted Elasticsearch EBS + snapshots, and Zitadel resources (and, in pavo-bootstrap-aws, the in-VPC observability volumes). One key for the whole deployment: least customer effort, uniform key custody. Renamed from db_kms_key_arn (it never only covered the DB). Required. Both 'arn:aws:kms:...:key/UUID' and 'arn:aws:kms:...:alias/name' formats are accepted. NOTE: this supports only the commercial AWS partition (arn:aws:...). GovCloud and China partitions require partition-aware policy resources (policy-statements.json hardcodes 'arn:aws:' in many resource ARNs); deferred to a follow-up."
   type        = string
 
   validation {
@@ -200,14 +200,16 @@ variable "es_mode" {
 }
 
 # -----------------------------------------------------------------------------
-# Network posture — the "standard vs strict" zero-egress knob for a dedicated
+# Network posture — the "standard vs strict" egress knob for a dedicated
 # customer cell. strict is machine-gated on cell readiness (CNI NetworkPolicy
 # support) so it cannot be entered half-configured; see the readiness check in
 # network_policies.tf.
 # -----------------------------------------------------------------------------
 variable "network_posture" {
   description = <<-EOT
-    Network posture for this instance — the "standard vs strict" zero-egress knob.
+    Network posture for this instance — the "standard vs strict" egress knob (the
+    instance posture; the cell posture is set in pavo-bootstrap-aws with
+    run-bootstrap.sh --strict, and a strict deployment sets both).
       - "standard" : today's behaviour, unchanged.
       - "strict"   : per-instance default-deny egress NetworkPolicies (only in-VPC
                      + gateway/interface-endpoint destinations reachable), an

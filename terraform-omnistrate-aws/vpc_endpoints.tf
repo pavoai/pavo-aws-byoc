@@ -36,11 +36,13 @@ variable "enable_vpc_endpoints" {
     Provision VPC interface endpoints (AWS PrivateLink) for Bedrock (control
     plane + runtime), KMS, Secrets Manager, ECR, SQS, SNS, STS, RDS,
     ElastiCache, EFS, IAM, ACM (strict only), and SES (when email is enabled) so those AWS API
-    calls never traverse the public internet. Default true — small hourly
-    cost per endpoint, and required for the zero-egress posture on strict
-    BYOC (e.g. healthcare) and for instance tofu on a private cell (no NAT).
-    Set false only for cost-sensitive non-strict deployments that accept
-    AWS-service traffic over the NAT gateway.
+    calls stay on AWS's network over PrivateLink. Only the services no
+    existing private-DNS endpoint already serves are created (the cell
+    bootstrap owns most of them). Default true — small hourly cost per
+    endpoint, and required for the strict posture and for instance tofu on a
+    private cell (no NAT, see pavo-bootstrap-aws/RUNBOOKS.md). Set false only
+    for cost-sensitive non-strict deployments that accept AWS-service traffic
+    over the NAT gateway.
   EOT
   type        = bool
   default     = true

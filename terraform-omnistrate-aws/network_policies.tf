@@ -23,8 +23,9 @@
 # denying egress after rollback = outage).
 #
 # Enforcement: inert until the cell's CNI NetworkPolicy enforcement is on
-# (network_policy_ready, gated below). The AWS-managed SGs egress 0.0.0.0/0, so
-# this NetworkPolicy is the primary egress control, not a mirror of an SG.
+# (network_policy_ready, gated below). Nothing in this module restricts egress
+# at the security-group level (the data-store SGs allow all outbound traffic,
+# main.tf), so this NetworkPolicy is the egress control, not a mirror of an SG.
 
 locals {
   strict_count = var.network_posture == "strict" ? 1 : 0

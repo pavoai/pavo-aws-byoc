@@ -4,20 +4,42 @@
 
 - **Data stores** (RDS, Redis, EFS) sit in private subnets behind their own
   security groups. RDS is not publicly accessible.
-- **AWS APIs over PrivateLink:** with `enable_vpc_endpoints = true` (the
-  default), stage 2 creates interface endpoints for Bedrock (runtime and
+- **AWS APIs over PrivateLink, by stage.** Stage 1 creates the cell's
+  interface endpoints for KMS, Secrets Manager, IAM, RDS, ElastiCache, SNS,
+  SQS, EFS, SES (`email`) and ACM, plus SageMaker API when
+  `enable_sagemaker_api_endpoint` is set
+  (`pavo-bootstrap-aws/vpc_interface_endpoints.tf`), and on a strict cell the
+  Route 53 endpoint (`vpc_interface_endpoint_route53.tf`). Stage 2, with
+  `enable_vpc_endpoints = true` (the default), lists Bedrock (runtime and
   control plane), KMS, Secrets Manager, ECR (API and registry), SQS, SNS, STS,
-  RDS, EFS, ElastiCache and IAM, plus ACM on strict and SES when email is enabled
-  (`terraform-omnistrate-aws/vpc_endpoints.tf`). Calls to
-  those services, including Bedrock prompts and embeddings, stay on the AWS
-  network.
+  RDS, EFS, ElastiCache and IAM, plus ACM on strict and SES when email is
+  enabled, and creates only the services no existing private-DNS endpoint in
+  the VPC already serves; on a bootstrapped cell that leaves at most the Bedrock,
+  ECR and STS endpoints to stage 2 (`terraform-omnistrate-aws/vpc_endpoints.tf`).
+  Calls to those services, including Bedrock prompts and embeddings, stay on
+  the AWS network.
 - **S3 and DynamoDB** go through gateway endpoints. Omnistrate's cell usually
   provides them; stage 1 fills any route tables they don't cover
   (`pavo-bootstrap-aws/vpc_gateway_endpoints.tf`).
 
 ## Egress by posture
 
-`network_posture` is set per instance.
+Two settings carry the posture, and a strict deployment sets both:
+
+- **Cell posture** (stage 1): `scripts/run-bootstrap.sh ... --strict` sets the
+  module variable `network_posture = "strict"` and, after checking that the
+  cell's VPC CNI add-on reports NetworkPolicy enforcement, `network_policy_ready
+  = true`. The cell posture selects the strict permission boundary
+  (`rendered-permission-boundary-strict.json`), creates the Route 53 interface
+  endpoint, switches the Grafana ingress issuer to `pavo-selfsigned`, and
+  publishes `/pavo/cells/<cluster>/network_policy_ready`, the parameter a strict
+  instance checks at plan time.
+- **Instance posture** (stage 2): the instance parameter `network_posture`. On
+  `strict` it creates the default-deny egress NetworkPolicy below, makes the
+  load balancer internal with the ACM certificate from `pavo-cert-aws/`, adds
+  the ACM interface endpoint, applies the strict Helm profile, and fails the
+  plan unless the four hosting modes are `self_hosted` and
+  `redis_security_phase = enforced` at creation (`strict_profile.tf`).
 
 ### `standard`
 
@@ -43,39 +65,70 @@ Pods can reach the internet through your NAT gateway. The deployment contacts:
 | E2B sandboxes | Sandbox-backed agent sessions | `e2b_api_key` (empty by default) |
 | Google Cloud Storage | Sandboxes mount a data bucket with gcsfuse | `sandbox_gcsfuse_enabled` (off by default) |
 
-The application may also call third-party APIs whose credentials stage 2
-passes through, listed as Pavo-managed secrets in
-[inputs-contract.md](inputs-contract.md). Whether it does depends on the
-product features enabled for your instance.
+The complete list of external services the application and the modules can
+reach, with each one's default and its behaviour on strict, is the table in
+[data-handled.md](data-handled.md#what-leaves-your-account); the credentials
+stage 2 passes through are the Pavo-managed secrets in
+[inputs-contract.md](inputs-contract.md).
 
 ### `strict`
 
-Stage 2 adds a default-deny egress NetworkPolicy to the instance's workload
-namespace (`terraform-omnistrate-aws/network_policies.tf`). Pods in that
-namespace can reach only in-VPC destinations: the data stores, the interface
-endpoints, S3 through the gateway endpoint, and the Kubernetes API, plus any
-`strict_egress_extra_destinations` the cell publishes (your own network
-ranges and ports, set in stage 1). The internet and the instance metadata
-service are denied.
+Stage 2 adds one egress NetworkPolicy, `pavo-strict-egress`, to the instance
+namespace: it selects every pod, has `policyTypes: [Egress]`, and allows
+exactly the destinations below, so everything else is denied
+(`terraform-omnistrate-aws/network_policies.tf`). The allow-list as the code
+builds it:
+
+- every CIDR of the VPC, primary and secondary associations, on all ports and
+  protocols. This is what reaches the data stores and the interface endpoints;
+  under the VPC CNI pod addresses come from the same subnets, so same-namespace
+  pod-to-pod traffic and DNS (CoreDNS) are covered by this rule too;
+- the AWS-managed S3 prefix list for the region, on all ports and protocols:
+  the destination the S3 gateway endpoint routes to. DynamoDB is not listed;
+- the cluster's Kubernetes service CIDR, on all ports and protocols, which is
+  how pods reach the Kubernetes API;
+- one rule per entry of the cell parameter
+  `strict_egress_extra_destinations`, opening only that CIDR and only its
+  listed TCP ports (your outbound proxy or an on-premises range; routing to it
+  stays your network).
+
+The internet and the instance metadata address are outside every rule. The
+policy is enforced only when the cell's VPC CNI NetworkPolicy enforcement is
+on; a strict instance fails at plan time unless the cell has published
+`network_policy_ready`. Nothing in stage 2 restricts egress at the
+security-group level: the data-store security groups allow all outbound
+traffic, so this policy is the egress control.
 
 - **S3 reach:** the gateway endpoints (Omnistrate's and stage 1's) carry the
   AWS default policy, so a pod allowed to S3 can reach any bucket through
   them; the IAM roles, not the endpoint, bound which buckets it may use.
 - **Scope:** the policy covers the instance namespace only, not the whole
-  cell. Platform namespaces (for example `kube-system`, `external-secrets`,
-  `cosign-system`) keep their own rules.
+  cell. Platform namespaces (`kube-system`, `cert-manager`,
+  `external-secrets`, `cosign-system`, `elastic-system`,
+  `pavo-observability`) are outside it; the stage 1 observability namespace
+  carries its own policies, the others are platform exceptions. Those namespaces are
+  outside this policy, but on a private cell (no NAT) they have no internet
+  route either: the signature admission controller cannot reach Sigstore or
+  `ghcr.io`, and the alert forwarder reaches only what its own policy leg and
+  your routing allow.
 - **Load balancer:** internal, not internet-facing, with an ACM certificate
   requested by `pavo-cert-aws/` instead of Let's Encrypt.
 - **Operator consoles:** Kibana, the Temporal UI and Grafana sit on that
   internal load balancer behind a generated password (Elasticsearch native
   user, nginx basic auth, Grafana admin). There is no SSO in front of them;
   reaching them needs VPC or Client VPN access plus the password.
-- **Umbrella:** `network_posture = "strict"` is the single control. Helm
-  `aws-strict-profile` layers override stored portal values on every render
-  (Bedrock-only LLM, empty OpenAI / Langfuse / HubSpot / MicroVM keys).
-  `strict_profile.tf` pins ES / Grafana / Temporal / Zitadel to self-hosted;
-  `strict_hosting_guard` fails the plan if any of the four is set to `cloud`,
-  instead of migrating data.
+- **Helm profile:** on strict the `aws-strict-profile` layers override stored
+  portal values on every render: the API gateway runs with HubSpot and
+  Langfuse off and the Brevo, HubSpot and Langfuse keys empty; the worker runs
+  Bedrock-only (`llmCloudOnly`, Bedrock Titan embeddings) with Slack
+  notifications off, the `pavo_custom` computer backend, and the OpenAI,
+  Bedrock bearer, E2B, MicroVM, Slack, Parallel, Amplitude, Sumble, Gemini and
+  Modal keys empty and the sandbox GCS mount disabled; onboarding runs
+  Bedrock embeddings with the OpenAI, Bedrock bearer and Langfuse keys empty,
+  and the knowledge service with the OpenAI and Bedrock bearer keys empty (`spec/spec-byoc.yaml`, the four `aws-strict-profile`
+  blocks). `strict_profile.tf` requires ES, Grafana, Temporal and Zitadel to be
+  self-hosted at creation and fails the plan otherwise, instead of migrating
+  data.
 - **Prerequisites:** a strict instance fails at plan time unless the cell has
   NetworkPolicy enforcement ready (`/pavo/cells/<cluster>/network_policy_ready`)
   and the instance was created with `es_mode`, `grafana_mode`, `temporal_mode`,

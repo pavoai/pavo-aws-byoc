@@ -45,9 +45,11 @@ through Omnistrate).
   `pavo-nginx` ingress class, the Let's Encrypt and self-signed cluster
   issuers, and the image-signature policies.
 - **Networking:** S3 and DynamoDB gateway endpoints, only for route tables the
-  existing endpoints don't already cover. Interface VPC endpoints for the AWS
-  APIs the instance apply refreshes on plan (table in
-  `pavo-bootstrap-aws/RUNBOOKS.md`) so a no-NAT cell can plan. Helm and
+  existing endpoints don't already cover. Interface VPC endpoints for KMS,
+  Secrets Manager, IAM, RDS, ElastiCache, SNS, SQS, EFS, SES and ACM, plus
+  SageMaker API when `enable_sagemaker_api_endpoint` is set and Route 53 on a
+  strict cell (`vpc_interface_endpoints.tf`, `vpc_interface_endpoint_route53.tf`),
+  so a cell without NAT can plan. Helm and
   in-VPC observability images are pinned from `mirrored-images.json`
   (artifact-plane ECR). That registry is in us-east-2; Omnistrate adds
   cross-region ECR and S3 interface endpoints and private zones to your VPC,
@@ -69,9 +71,10 @@ Per instance:
   snapshots and for the identity Job. All are created with the stage 1
   permission boundary.
 - **Networking:** security groups for RDS, Redis, EFS and the VPC interface
-  endpoints; interface endpoints for the AWS APIs the instance uses (list in
-  `network-and-egress.md`); and, with
-  `network_posture = "strict"`, default-deny egress NetworkPolicies.
+  endpoints; the interface endpoints the cell does not already have, at most
+  Bedrock, ECR and STS on a bootstrapped cell (`vpc_endpoints.tf`; both stages'
+  lists are in `network-and-egress.md`); and, with
+  `network_posture = "strict"`, the default-deny egress NetworkPolicy.
 - **Kubernetes:** the instance namespace, ExternalSecrets that sync the
   database password, and configuration Secrets and ConfigMaps.
 - **Optional components** (by `es_mode`, `temporal_mode`, `zitadel_mode`,
@@ -96,7 +99,7 @@ Terraform that creates those objects is not published here.
 
 | Input | Values | Changes |
 |---|---|---|
-| `network_posture` | `standard`, `strict` | Strict adds default-deny egress NetworkPolicies, an internal load balancer and an ACM certificate (`pavo-cert-aws/`) |
+| `network_posture` | `standard`, `strict` | The instance posture: strict adds the default-deny egress NetworkPolicy, an internal load balancer and an ACM certificate (`pavo-cert-aws/`). The cell posture is set separately in stage 1 (`run-bootstrap.sh --strict`); a strict deployment sets both (network-and-egress.md) |
 | `es_mode` | `cloud`, `self_hosted` | Elastic Cloud deployment, or an in-cluster ECK cluster with S3 snapshots |
 | `grafana_mode` | `cloud` (default), `self_hosted` | Telemetry egress to Grafana Cloud, or in-VPC Prometheus/Grafana (strict requires `grafana_mode = self_hosted` at instance creation; the plan fails otherwise) |
 | `temporal_mode` | `cloud`, `self_hosted` | Temporal Cloud, or an in-cluster Temporal with its own RDS |

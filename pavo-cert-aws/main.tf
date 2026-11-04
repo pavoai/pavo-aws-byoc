@@ -15,8 +15,8 @@
 #                is the window Pavo has to write the CNAME. ingress-nginx takes
 #                the ARN from pavoInfra, so it only ever sees an issued cert.
 #
-# A strict cell has no NAT: ACM is reachable only through the `acm` interface
-# endpoint pavo-bootstrap-aws creates, and without it RequestCertificate hangs
+# A private cell has no NAT (pavo-bootstrap-aws/RUNBOOKS.md), so ACM is reachable
+# only through the `acm` interface endpoint pavo-bootstrap-aws creates, and without it RequestCertificate hangs
 # for the SDK's full retry budget. The gate below turns that into the same
 # plan-time "run the bootstrap" failure pavoInfra gives, so a fresh cell fails
 # fast and the retry after the bootstrap applies this in minutes.
