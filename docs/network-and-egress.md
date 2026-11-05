@@ -105,10 +105,9 @@ traffic, so this policy is the egress control.
 - **Scope:** the policy covers the instance namespace only, not the whole
   cell. Platform namespaces (`kube-system`, `cert-manager`,
   `external-secrets`, `cosign-system`, `elastic-system`,
-  `pavo-observability`) are outside it; the stage 1 observability namespace
-  carries its own policies, the others are platform exceptions. Those namespaces are
-  outside this policy, but on a private cell (no NAT) they have no internet
-  route either: the signature admission controller cannot reach Sigstore or
+  `pavo-observability`) are outside it: the stage 1 observability namespace
+  carries its own policies, the others are platform exceptions. On a private
+  cell (no NAT) they have no internet route either: the signature admission controller cannot reach Sigstore or
   `ghcr.io`, and the alert forwarder reaches only what its own policy leg and
   your routing allow.
 - **Load balancer:** internal, not internet-facing, with an ACM certificate

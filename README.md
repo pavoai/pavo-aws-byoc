@@ -5,7 +5,7 @@ into your AWS account, published so your security team can review it. It is
 generated from Pavo's private source repository. Nothing here is consumed
 directly: it isn't used by the installer, by Omnistrate, or by any release.
 
-- Snapshot of private commit `f992ec1e3041`, published 2026-11-04T21:08:42Z.
+- Snapshot of private commit `ddc4f2992d91`, published 2026-11-05T00:25:26Z.
 - `PROVENANCE.json` lists the SHA-256 of every file and the commit it came from.
 - Pull requests and issues aren't accepted here. To report a security issue,
   see [SECURITY.md](SECURITY.md).
@@ -14,7 +14,7 @@ directly: it isn't used by the installer, by Omnistrate, or by any release.
 
 | Module | Applied by | Files |
 |---|---|---|
-| [`pavo-bootstrap-aws/`](pavo-bootstrap-aws/) | customer | 41 |
+| [`pavo-bootstrap-aws/`](pavo-bootstrap-aws/) | customer | 42 |
 | [`pavo-cert-aws/`](pavo-cert-aws/) | omnistrate | 4 |
 | [`terraform-omnistrate-aws/`](terraform-omnistrate-aws/) | omnistrate | 23 |
 

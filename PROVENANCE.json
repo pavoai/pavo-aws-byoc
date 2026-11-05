@@ -10,7 +10,7 @@
     "image-values/tribal-knowledge/image-values.yaml": "sha256:970a29ecbfe4c2504f3beed236eb56cd824307d0c2a10f3af98db9f56338547b",
     "pavo-bootstrap-aws/.gitignore": "sha256:07ab48e44a9b1e3844da8d1b1c454ab4bba35e11ddfff9897eb22dcef9ff85ed",
     "pavo-bootstrap-aws/.terraform.lock.hcl": "sha256:dbf9baf0f1699ca46b4fa2fcb020826c37ef6c06eef7e716600ced00b2af35e0",
-    "pavo-bootstrap-aws/README.md": "sha256:c14330d7262434ea8be4bf899a789bd171b5e11075699dad30849ae997d9cfeb",
+    "pavo-bootstrap-aws/README.md": "sha256:ddbe191953ba6e570602ef48d5c4cd8f448da53012bf6ba8633a61171de508d2",
     "pavo-bootstrap-aws/RUNBOOKS.md": "sha256:116c87db8a92b0bd9680a345db6a9fbf4ca57f5333edf078b2048f8d128909ec",
     "pavo-bootstrap-aws/SES-EMAIL-ONBOARDING.md": "sha256:f2927a73ede50cb40f085e63a02ff10f706d99cd58b433bccdaea38deac68dc5",
     "pavo-bootstrap-aws/cell.tf": "sha256:144f57c983e6682398f5b1deb89917cf29657591a90f31b5d6ba8252b06f78d5",
@@ -20,7 +20,7 @@
     "pavo-bootstrap-aws/microvm_image.tf": "sha256:ac93b3a25af95cb3c25a97e80193ce80744a48a64528dc211e049d78bddaacc7",
     "pavo-bootstrap-aws/mirrored-images.json": "sha256:3ae976499637076c36c0e824233e4525478043eba7eead5a2f18b0225afef567",
     "pavo-bootstrap-aws/mirrored_images.tf": "sha256:beaf8fdb99515eda0b3d4e568ba85bc95735513ba1f254df13facd239ba737c4",
-    "pavo-bootstrap-aws/observability.tf": "sha256:2f8eb8340a8319b323eb8a6ecd6203d1d93e3232a8ede62e540a2dd74ed4cd8d",
+    "pavo-bootstrap-aws/observability.tf": "sha256:a43c2e2a5bffecdac3123b9244d923098300ed53a7d3b9d9935928bf530e43b0",
     "pavo-bootstrap-aws/observability/grafana-values.yaml.tftpl": "sha256:b9bf29a9b2e5491703af1a4f147653c9813daee9ddb381c8df601f30589b7aba",
     "pavo-bootstrap-aws/observability/manifests/dashboard-infra-configmap.yaml": "sha256:b2aedac93d366525283331b9d443df87d514cd029826f4c3b67f56eef0b40329",
     "pavo-bootstrap-aws/observability/manifests/dashboard-intern-configmap.yaml": "sha256:2cd2aaf94b6040a68ab7ef9db9feba2a535ee60bcfdb090d82c2cd65add59140",
@@ -35,6 +35,7 @@
     "pavo-bootstrap-aws/observability/prometheus-values.yaml.tftpl": "sha256:70fad85251fbe97724c3c23596fe8bbcbb4ddc7c6f02f4f88f55c9e1a65a02a5",
     "pavo-bootstrap-aws/outputs.tf": "sha256:8d3ae74c9172daf4914c66e7ff044276958a06908077ec689da705d7e81422cb",
     "pavo-bootstrap-aws/policy-statements.json": "sha256:c18a026eeea86a2ca8838b02301e14bcd7da71953da1e302c8f0110519e12845",
+    "pavo-bootstrap-aws/provider_mirror_removed.tf": "sha256:141f1aad6176b3ba71c5ce3a4088320a2daff198037aa26ff373eff109087677",
     "pavo-bootstrap-aws/providers.tf": "sha256:cd42da891147dce960321621742e43884151e5f8a71c4ba350f2dd230c1b41d9",
     "pavo-bootstrap-aws/rendered-permission-boundary-strict.json": "sha256:b0ef31acbf87aa66645dc55a1c2f7858e41269547f9397adccc502c6c25a8477",
     "pavo-bootstrap-aws/rendered-permission-boundary.json": "sha256:153ffef01c62607d0b7f67769fd7e9f1bb24dffa8bbd2cd2c4d3740dec8d9640",
@@ -79,12 +80,12 @@
     "terraform-omnistrate-aws/zitadel_self_hosted.tf": "sha256:f3d4f2d8c43416bb9377836a9603e1cf3c4fc6e6b757315077928212e2e2b5f7"
   },
   "generated": {
-    "README.md": "sha256:9572de3f6b45e7be8cabf3b81c3858f4c02547b6473670da049533d22324c39f",
+    "README.md": "sha256:cef368c62bd5be3a7ea745a949e24ed86e578978c130584d32d08b13e20fa509",
     "SECURITY.md": "sha256:b918c8c2851817029a6bd2334624e9fa34dbb838bfff55f8c1e4fd52be3abeed",
     "docs/architecture.md": "sha256:cb7000b4a85e2abba9d248bf0623bcb8af09c1ce8b13981728d706a2a3151ef2",
     "docs/data-handled.md": "sha256:ae4457381d0da6a9fb8fd9d847287add9ceb97c6fbe633993fc4cf4027b03085",
     "docs/inputs-contract.md": "sha256:05a9aea17510f6a34d574fe911edcd5f34ac1739395b9f5c8b50a33fb20a299e",
-    "docs/network-and-egress.md": "sha256:6e32f8162a629d8f578ef41ecc75595d54dc6648d2d8d155a1adc866f62a8323",
+    "docs/network-and-egress.md": "sha256:fd106ee4315a02327829268bf31108829cd417b29f1155741465bb183725f7b8",
     "docs/permissions.md": "sha256:f19db2bac488d5e6d0922925a204f153a48109002f66527e8c42a16c8f1f4cdf",
     "docs/review-guide.md": "sha256:21a89408bf7a9574f7dcfeab39d3508e7769ca05eff1723dafc079ecc42ee8ad",
     "terraform-omnistrate-aws/customer-configuration.tf": "sha256:e0bd23df7c07baf2a1391b36985115aa7c81859631d3d85f5b282427ebba8cad"
@@ -103,7 +104,7 @@
   "modules": {
     "pavo-bootstrap-aws": {
       "applied_by": "customer",
-      "tree_sha256": "b09789b04ee4e0a4c4eb55d0ce16c62e0bfc89846d86c3c414be62f077db0a55"
+      "tree_sha256": "46bb2ff4c72c7a3142b80821b0348cfdabf570501d7878b42fd19b7313304b9b"
     },
     "pavo-cert-aws": {
       "applied_by": "omnistrate",
@@ -115,9 +116,9 @@
     }
   },
   "note": "Unsigned. Records which private commit this snapshot came from; it doesn't prove which commit any particular apply used. See README.md.",
-  "published_at": "2026-11-04T21:08:42Z",
+  "published_at": "2026-11-05T00:25:26Z",
   "schema": 1,
-  "source_commit": "f992ec1e3041f10cc303c1516ad1946a6358f400",
-  "source_commit_time": "2026-11-04T21:07:33Z",
+  "source_commit": "ddc4f2992d919845d4ab7a222f3b1f2d7dee1b83",
+  "source_commit_time": "2026-11-05T00:23:54Z",
   "source_repo": "pavoai/pavo-terraform-templates (private)"
 }
